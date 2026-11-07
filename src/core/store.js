@@ -39,10 +39,11 @@ export function createStore(sql, cfg) {
     tzOf: (u) => (u && !cfg.adminIds.has(Number(u.tg_id)) ? u.tz || 'Europe/Moscow' : cfg.tz),
     // ---------- settings ----------
     async init() {
+      const have = new Set((await sql.all('SELECT key FROM settings')).map((r) => r.key));
       for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
-        await sql.run('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)', [k, v]);
+        if (!have.has(k)) await sql.run('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)', [k, v]);
       }
-      await S.loadAdmins();
+      await S.loadAdmins(true);
     },
     async getSettings(force = false) {
       if (!force && settingsCache && Date.now() - settingsAt < 5000) return settingsCache;
@@ -57,8 +58,8 @@ export function createStore(sql, cfg) {
       settingsCache = null;
       await S.log(actorId, 'settings.update', { key, value });
     },
-    async loadAdmins() {
-      const s = await S.getSettings(true);
+    async loadAdmins(force = false) {
+      const s = await S.getSettings(force);
       for (const id of (s.admin_ids || '').split(',').filter(Boolean)) cfg.adminIds.add(Number(id));
     },
     isAdmin: (tgId) => cfg.adminIds.has(Number(tgId)),
@@ -114,13 +115,13 @@ export function createStore(sql, cfg) {
     userByTg: (tgId) => sql.first('SELECT * FROM users WHERE tg_id = ?', [tgId]),
     getUser: (id) => sql.first('SELECT * FROM users WHERE id = ?', [id]),
     async updateUser(id, fields, actorTgId) {
-      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz', 'tz_auto'];
+      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz', 'tz_auto', 'deleted'];
       if ('tz' in fields && !isValidTz(fields.tz)) throw new Error('Неизвестный часовой пояс');
       const keys = Object.keys(fields).filter((k) => allowed.includes(k));
       if (!keys.length) return S.getUser(id);
       const vals = keys.map((k) => {
         if (k === 'price') return fields[k] === '' || fields[k] == null ? null : Number(fields[k]);
-        if (k.startsWith('n_') || k === 'blocked' || k === 'registered' || k === 'tz_auto') return fields[k] ? 1 : 0;
+        if (k.startsWith('n_') || k === 'blocked' || k === 'registered' || k === 'tz_auto' || k === 'deleted') return fields[k] ? 1 : 0;
         return String(fields[k] ?? '').slice(0, 2000);
       });
       await sql.run(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`, [...vals, id]);
@@ -169,9 +170,21 @@ export function createStore(sql, cfg) {
           (SELECT MIN(b.date || ' ' || b.start) FROM bookings b WHERE b.user_id = u.id
              AND b.status IN ${ACTIVE} AND b.date >= ?) AS next_lesson,
           (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.user_id = u.id) AS paid_total
-        FROM users u WHERE u.registered = 1 ORDER BY u.name COLLATE NOCASE`, [today]);
+        FROM users u WHERE u.registered = 1 AND COALESCE(u.deleted, 0) = 0 ORDER BY u.name COLLATE NOCASE`, [today]);
     },
     priceOf: (u, s) => Number(u?.price ?? s.price),
+    /** «Удалить» ученика: скрыть из списков и отменить будущие уроки. История уроков и оплат остаётся в статистике. */
+    async deleteStudent(id, actorTgId) {
+      const u = await S.getUser(id);
+      if (!u) throw new Error('Ученик не найден');
+      const future = await S.userBookings(id);
+      for (const b of future) {
+        await sql.run("UPDATE bookings SET status = 'cancelled', cancelled_by = 'teacher', updated_at = datetime('now') WHERE id = ?", [b.id]);
+      }
+      await sql.run('UPDATE users SET deleted = 1, registered = 0, link_code = NULL WHERE id = ?', [id]);
+      await S.log(actorTgId, 'user.deleted', { user_id: id, name: u.name, cancelled_lessons: future.length });
+      return { user: u, cancelled: future };
+    },
 
     // ---------- schedule ----------
     async dayWindow(date, s) {
@@ -326,6 +339,14 @@ export function createStore(sql, cfg) {
     lastHomework: (userId) => sql.first(`SELECT date, topic, homework FROM bookings
       WHERE user_id = ? AND homework != '' AND status = 'done' ORDER BY date DESC, start DESC LIMIT 1`, [userId]),
 
+    async monthDetail(from, to) {
+      const [bookings, blocks, overrides] = await Promise.all([
+        S.bookingsBetween(from, to),
+        sql.all('SELECT * FROM blocks WHERE date BETWEEN ? AND ? ORDER BY start', [from, to]),
+        sql.all('SELECT * FROM day_overrides WHERE date BETWEEN ? AND ?', [from, to]),
+      ]);
+      return { bookings, blocks, overrides };
+    },
     pendingBookings: () => sql.all(`SELECT b.*, u.name, u.username FROM bookings b
       JOIN users u ON u.id = b.user_id WHERE b.status = 'pending' ORDER BY b.date, b.start`),
     bookingsBetween: (from, to) => sql.all(`SELECT b.*, u.name, u.username, u.level, u.manual, u.tg_id FROM bookings b
@@ -400,18 +421,24 @@ export function createStore(sql, cfg) {
         cnt("status = 'rejected'"),
         cnt("status = 'no_show'"),
       ]);
-      const income = (await sql.first("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE date(created_at) BETWEEN ? AND ?", [from, to])).s;
-      const earned = (await sql.first(`SELECT COALESCE(SUM(b.price),0) s FROM bookings b WHERE b.date BETWEEN ? AND ? AND b.status IN ('done','late_cancel','no_show')`, [from, to])).s;
-      const cal = await S.calendarRange(from, to);
+      const [incomeR, earnedR, cal, wd, top, studentsR, debtorsR] = await Promise.all([
+        sql.first("SELECT COALESCE(SUM(amount),0) s FROM payments WHERE date(created_at) BETWEEN ? AND ?", [from, to]),
+        sql.first(`SELECT COALESCE(SUM(b.price),0) s FROM bookings b WHERE b.date BETWEEN ? AND ? AND b.status IN ('done','late_cancel','no_show')`, [from, to]),
+        S.calendarRange(from, to),
+        sql.all(`SELECT ((CAST(strftime('%w', date) AS INTEGER) + 6) % 7) + 1 AS wd, COUNT(*) c FROM bookings
+          WHERE date BETWEEN ? AND ? AND status IN ('confirmed','done','pending') GROUP BY wd`, [from, to]),
+        sql.all(`SELECT u.name, COUNT(*) c FROM bookings b JOIN users u ON u.id = b.user_id
+          WHERE b.date BETWEEN ? AND ? AND b.status = 'done' GROUP BY b.user_id ORDER BY c DESC LIMIT 5`, [from, to]),
+        sql.first('SELECT COUNT(*) c FROM users WHERE registered = 1 AND COALESCE(deleted, 0) = 0'),
+        sql.first('SELECT COUNT(*) c FROM users WHERE registered = 1 AND COALESCE(deleted, 0) = 0 AND balance < 1'),
+      ]);
+      const income = incomeR.s;
+      const earned = earnedR.s;
       const capacity = cal.reduce((a, d) => a + d.capacity, 0);
       const booked = cal.reduce((a, d) => a + d.lessons, 0);
-      const wd = await sql.all(`SELECT ((CAST(strftime('%w', date) AS INTEGER) + 6) % 7) + 1 AS wd, COUNT(*) c FROM bookings
-        WHERE date BETWEEN ? AND ? AND status IN ('confirmed','done','pending') GROUP BY wd`, [from, to]);
       const byWeekday = [1, 2, 3, 4, 5, 6, 7].map((i) => wd.find((r) => r.wd === i)?.c || 0);
-      const top = await sql.all(`SELECT u.name, COUNT(*) c FROM bookings b JOIN users u ON u.id = b.user_id
-        WHERE b.date BETWEEN ? AND ? AND b.status = 'done' GROUP BY b.user_id ORDER BY c DESC LIMIT 5`, [from, to]);
-      const students = (await sql.first('SELECT COUNT(*) c FROM users WHERE registered = 1')).c;
-      const debtors = (await sql.first('SELECT COUNT(*) c FROM users WHERE registered = 1 AND balance < 1')).c;
+      const students = studentsR.c;
+      const debtors = debtorsR.c;
       return {
         from, to, income, earned, done, upcoming, no_show: noShow, rejected,
         cancelled: cancelledStudent + cancelledTeacher, cancelled_student: cancelledStudent, cancelled_teacher: cancelledTeacher,

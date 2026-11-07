@@ -356,3 +356,19 @@ body.sheet-open .sheet-backdrop { opacity: 1; pointer-events: auto; }
 .day, .slot, .btn, .chip, .item, .tabs button, .icon-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .day:active:not(:disabled), .slot:active:not(:disabled) { transform: scale(.95); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---------- v3: отклик и поля дат ---------- */
+.two > * { min-width: 0; }
+.field input[type="date"], .field input[type="time"] { -webkit-appearance: none; appearance: none; min-height: 48px; display: block; line-height: 1.2; text-align: left; }
+.field input[type="date"]::-webkit-date-and-time-value, .field input[type="time"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+.field input[type="date"]::-webkit-calendar-picker-indicator { opacity: .55; }
+.busy { pointer-events: none; position: relative; }
+.btn.busy, .slot.busy, .chip.busy { color: transparent !important; }
+.btn.busy svg, .slot.busy svg { opacity: 0; }
+.btn.busy::after, .slot.busy::after, .chip.busy::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
+  border: 2.5px solid currentColor; border-color: var(--accent) transparent var(--accent) transparent; animation: spin .7s linear infinite; }
+.btn.primary.busy::after, .btn.ok.busy::after { border-color: #fff transparent #fff transparent; }
+.item.busy, .day.busy { opacity: .6; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tabs button:active { transform: scale(.94); }

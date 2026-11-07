@@ -170,6 +170,14 @@ export function createApi({ store, cfg, bot, N, applyStatus, finishRegistration 
         receipts: (await store.userReceipts(id)).map(({ file_id, ...r }) => r), logs: await store.getLogs({ userId: id, limit: 50 }),
       };
     },
+    'GET /api/admin/month-detail': ({ q }) => store.monthDetail(...range(q)),
+    'POST /api/admin/student-delete': async ({ tgId, body }) => {
+      const { user, cancelled } = await store.deleteStudent(Number(body.id), tgId);
+      if (body.notify && user.tg_id && cancelled.length) {
+        await N.toUser(user, `❌ Запланированные уроки отменены преподавателем:\n${cancelled.map((b) => '• ' + N.when(user, b.date, b.start)).join('\n')}`);
+      }
+      return { ok: true, cancelled: cancelled.length };
+    },
     'POST /api/admin/student': ({ tgId, body }) => store.updateUser(Number(body.id), body, tgId),
     'POST /api/admin/student-add': ({ tgId, body }) => store.addManualStudent(body, tgId),
     'POST /api/admin/student-link': async ({ body }) => {

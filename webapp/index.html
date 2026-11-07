@@ -9,12 +9,11 @@
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 </head>
 <body>
   <header class="top">
     <div class="top-left">
-      <div class="brand-mark" aria-hidden="true"><i data-lucide="languages"></i></div>
+      <div class="brand-mark" id="brand" aria-hidden="true"></div>
       <div style="min-width:0">
         <div class="eyebrow" id="hello">Загрузка…</div>
         <h1 id="title">Английский с Таней</h1>
@@ -31,6 +30,7 @@
   <section class="sheet" id="sheet" role="dialog" aria-modal="true"></section>
   <div class="toast" id="toast"></div>
 
+  <script src="icons.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

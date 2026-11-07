@@ -26,7 +26,7 @@ async function getApp(env, origin) {
   };
   const store = createStore(d1(env.DB), cfg);
   await store.init();
-  // BOT_INFO (JSON) — только для локальных тестов без настоящего токена
+  // BOT_INFO (JSON) — данные бота без запроса getMe при холодном старте
   const botInfo = env.BOT_INFO ? JSON.parse(env.BOT_INFO) : undefined;
   const { bot, N, applyStatus, runReminders, setupCommands, finishRegistration } = createBot({ token: env.BOT_TOKEN, store, cfg, botInfo });
   if (!botInfo) await bot.init();

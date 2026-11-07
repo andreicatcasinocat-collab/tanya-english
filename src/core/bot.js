@@ -211,7 +211,7 @@ export function createBot({ token, store, cfg, botInfo }) {
   /** Завершение регистрации (вызывается и из бота, и с сайта после автоопределения пояса). */
   async function finishRegistration(tgId, uid) {
     await store.setState(tgId, null);
-    const u = await store.updateUser(uid, { registered: 1 }, tgId);
+    const u = await store.updateUser(uid, { registered: 1, deleted: 0 }, tgId);
     await store.log(tgId, 'user.registered', { user_id: u.id, name: u.name, level: u.level, goal: u.goal, tz: u.tz });
     await bot.api.sendMessage(tgId, `🌍 Часовой пояс: <b>${tzLabel(u.tz)}</b> ✅\n\nГотово! Теперь можно записаться на урок 👇\n\n🔔 Я буду напоминать об уроках за сутки, за 2 часа и за 15 минут. Настроить — кнопка «🔔 Уведомления».`,
       { parse_mode: 'HTML', reply_markup: studentMenu() }).catch((e) => console.error('finish reg', e.message));
@@ -617,7 +617,7 @@ export function createBot({ token, store, cfg, botInfo }) {
       .text('📝 Заметка', `stu_note|${uid}`);
     if (u.tg_id) kb.text('✉️ Написать', `stu_msg|${uid}`).row().text('💳 Напомнить об оплате', `stu_remind|${uid}`).row();
     else kb.text('🔗 Ссылка-приглашение', `stu_link|${uid}`).row();
-    kb.text(u.blocked ? '✅ Разблокировать' : '🚫 Заблокировать', `stu_blk|${uid}`);
+    kb.text(u.blocked ? '✅ Разблокировать' : '🚫 Заблокировать', `stu_blk|${uid}`).text('🗑 Удалить', `stu_del|${uid}`);
     return show(ctx, text, nav(kb, 'm|students'));
   }
   screens.students = async (ctx) => {
@@ -634,6 +634,21 @@ export function createBot({ token, store, cfg, botInfo }) {
     const u = await store.getUser(Number(ctx.match[1]));
     await store.updateUser(u.id, { blocked: u.blocked ? 0 : 1 }, ctx.from.id);
     await studentCard(ctx, u.id);
+  });
+  admin.callbackQuery(/^stu_del\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const u = await store.getUser(Number(ctx.match[1]));
+    const future = await store.userBookings(u.id);
+    await show(ctx, `🗑 Удалить ученика <b>${esc(u.name)}</b>?\n\nОн пропадёт из списков${future.length ? `, ${lessons(future.length)} в будущем будут отменены` : ''}. Проведённые уроки и оплаты останутся в статистике.`,
+      nav(new InlineKeyboard().text('Да, удалить', `stu_delok|${u.id}`), `stu|${u.id}`));
+  });
+  admin.callbackQuery(/^stu_delok\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const { user, cancelled } = await store.deleteStudent(Number(ctx.match[1]), ctx.from.id);
+      if (user.tg_id && cancelled.length) await N.toUser(user, `❌ Запланированные уроки отменены преподавателем:\n${cancelled.map((b) => '• ' + N.when(user, b.date, b.start)).join('\n')}`);
+      await show(ctx, `🗑 Ученик <b>${esc(user.name)}</b> удалён.${cancelled.length ? ` Отменено уроков: ${cancelled.length}.` : ''}`, nav(new InlineKeyboard(), 'm|students'));
+    } catch (e) { await show(ctx, `⚠️ ${esc(e.message)}`, nav(new InlineKeyboard(), 'm|students')); }
   });
   admin.callbackQuery(/^stu_remind\|(\d+)$/, async (ctx) => {
     const u = await store.getUser(Number(ctx.match[1]));

@@ -7,17 +7,10 @@ if (tg?.colorScheme) document.documentElement.dataset.theme = tg.colorScheme;
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 
-// ---------- иконки (Lucide) ----------
-const ic = (name) => `<i data-lucide="${name}"></i>`;
+// ---------- иконки (встроенный набор Lucide, см. icons.js) ----------
+const ic = (name) => `<svg class="lucide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${(window.ICONS || {})[name] || ''}</svg>`;
 const H = (icon, text) => `<h2><span class="hi">${ic(icon)}</span>${text}</h2>`;
-let icQueued = false;
-function drawIcons() {
-  icQueued = false;
-  if (window.lucide && document.querySelector('i[data-lucide]')) window.lucide.createIcons({ attrs: { 'stroke-width': 1.9 } });
-}
-new MutationObserver(() => { if (!icQueued) { icQueued = true; requestAnimationFrame(drawIcons); } })
-  .observe(document.body, { childList: true, subtree: true });
-drawIcons();
+$('#brand').innerHTML = ic('languages');
 const qs = new URLSearchParams(location.search);
 const devAs = qs.get('as');
 // Адрес API: по умолчанию тот же сайт. Для копии на GitHub Pages бот передаёт ?api= (только доверенные адреса).
@@ -38,7 +31,50 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- API ----------
+// GET-ответы кэшируются: экран рисуется сразу из памяти, а свежие данные догружаются в фоне.
+// Любое изменение (POST) сбрасывает кэш, чтобы после действия не показать старое.
+const cache = new Map(); // path → { data, at }
+const inflight = new Map();
+const FRESH_MS = 4000;
 async function api(path, body) {
+  if (!body) {
+    const c = cache.get(path);
+    if (c) {
+      if (Date.now() - c.at > FRESH_MS) revalidate(path);
+      return c.data;
+    }
+    if (inflight.has(path)) return inflight.get(path);
+    const p = rawApi(path).then((data) => { cache.set(path, { data, at: Date.now() }); return data; }).finally(() => inflight.delete(path));
+    inflight.set(path, p);
+    return p;
+  }
+  const r = await rawApi(path, body);
+  cache.clear();
+  S.monthCache?.clear();
+  return r;
+}
+function revalidate(path) {
+  if (inflight.has(path)) return;
+  const old = JSON.stringify(cache.get(path)?.data);
+  const p = rawApi(path).then((data) => {
+    cache.set(path, { data, at: Date.now() });
+    if (JSON.stringify(data) !== old) scheduleRerender();
+    return data;
+  }).catch(() => {}).finally(() => inflight.delete(path));
+  inflight.set(path, p);
+}
+let rerenderTimer;
+function scheduleRerender() {
+  clearTimeout(rerenderTimer);
+  rerenderTimer = setTimeout(() => {
+    // не мешаем, если пользователь что-то вводит или открыта шторка
+    if (document.body.classList.contains('sheet-open') || isField(document.activeElement)) return;
+    S.monthCache?.clear();
+    const y = window.scrollY;
+    RENDER[S.tab]?.().then(() => window.scrollTo({ top: y })).catch(() => {});
+  }, 250);
+}
+async function rawApi(path, body) {
   const url = new URL(path, API_BASE);
   if (devAs) url.searchParams.set('as', devAs);
   let res;
@@ -141,8 +177,13 @@ function openSheet(html, onMount) {
 }
 function closeSheet() { document.activeElement?.blur?.(); document.body.classList.remove('sheet-open'); }
 $('#backdrop').onclick = closeSheet;
+let pressed = null;
+document.addEventListener('pointerdown', (e) => { pressed = { el: e.target.closest?.('.btn, .slot, .chip, .item, .day'), at: Date.now() }; }, true);
 async function run(fn, okMsg) {
-  try { const r = await fn(); if (okMsg) toast(okMsg); haptic('medium'); return r; } catch (e) { toast(e.message); throw e; }
+  const el = pressed && Date.now() - pressed.at < 1500 ? pressed.el : null;
+  if (el?.classList.contains('busy')) return; // защита от двойного нажатия
+  el?.classList.add('busy');
+  try { const r = await fn(); if (okMsg) toast(okMsg); haptic('medium'); return r; } catch (e) { toast(e.message); throw e; } finally { el?.classList.remove('busy'); }
 }
 function confirmBox(text) {
   return new Promise((res) => (tg?.showConfirm ? tg.showConfirm(text, res) : res(confirm(text))));
@@ -536,10 +577,17 @@ async function adminCal() {
 
 async function renderAdminDay(date) {
   const box = $('#day');
-  box.style.opacity = '.55';
-  const d = await api(`/api/admin/day?date=${date}`);
+  // День собирается из данных месяца, которые уже в памяти, — переключение дней мгновенное
+  const [f, t] = monthBounds(date.slice(0, 7));
+  const [days, det] = await Promise.all([loadMonth(date.slice(0, 7)), api(`/api/admin/month-detail?from=${f}&to=${t}`)]);
   if (S.selDate !== date) return; // пользователь уже выбрал другой день
-  box.style.opacity = '';
+  const day = days[date] || {};
+  const d = {
+    window: day.window, slots: day.slots || [],
+    override: det.overrides.find((o) => o.date === date) || null,
+    bookings: det.bookings.filter((b) => b.date === date),
+    blocks: det.blocks.filter((b) => b.date === date),
+  };
   const active = d.bookings.filter((b) => !['cancelled', 'rejected'].includes(b.status));
   const rows = [];
   const covered = new Set();
@@ -693,6 +741,7 @@ async function adminStudents() {
   });
   $('#addStu').onclick = addStudentSheet;
   draw();
+  list.slice(0, 15).forEach((st, i) => setTimeout(() => api(`/api/admin/student?id=${st.id}`).catch(() => {}), 300 + i * 120));
 }
 
 function addStudentSheet() {
@@ -727,6 +776,8 @@ function addStudentSheet() {
 }
 
 async function studentSheet(id) {
+  // Шторка открывается сразу, данные догружаются
+  if (!cache.has(`/api/admin/student?id=${id}`)) openSheet('<div class="skeleton" style="height:70px"></div><div class="skeleton" style="margin-top:12px"></div><div class="skeleton" style="margin-top:12px"></div>');
   const d = await api(`/api/admin/student?id=${id}`);
   const u = d.user;
   const cnt = (f) => d.bookings.filter(f).length;
@@ -769,6 +820,7 @@ async function studentSheet(id) {
       <input class="search" id="pn" placeholder="Комментарий (пакет, способ оплаты…)">
       <button class="btn primary" id="payU">${ic('plus')}Добавить оплату</button>
       <button class="btn ghost" id="bookU">${ic('calendar-plus')}Записать на урок</button>
+      <button class="btn bad" id="delU" style="margin-top:6px">${ic('trash-2')}Удалить ученика</button>
     </div>
     <h3 style="margin-top:18px">Уроки</h3>
     <div class="list" style="margin-top:8px">${d.bookings.slice(0, 20).map((b) => `<div class="item static"><div><div class="t">${fmt(b.date, { day: 'numeric', month: 'short' })}, ${b.start}${b.topic ? ' · ' + esc(b.topic) : ''}</div>${b.homework ? `<div class="s">${ic('notebook-pen')} ${esc(b.homework)}</div>` : ''}</div>${pill(b.status, b.cancelled_by ? (b.cancelled_by === 'student' ? ' · ученик' : ' · вы') : '')}</div>`).join('') || '<span class="muted small">Пока нет</span>'}</div>
@@ -790,6 +842,14 @@ async function studentSheet(id) {
     $('#payU').onclick = () => {
       if (!$('#pa').value && !$('#pl').value) return toast('Укажите уроки или сумму');
       run(() => api('/api/admin/payment', { user_id: u.id, amount: Number($('#pa').value) || 0, lessons: Number($('#pl').value) || 0, note: $('#pn').value }), 'Оплата записана').then(() => studentSheet(id));
+    };
+    $('#delU').onclick = async () => {
+      const future = d.bookings.filter((b) => ['pending', 'confirmed'].includes(b.status) && b.date >= S.me.today.date).length;
+      const ok = await confirmBox(`Удалить ученика «${u.name}»?\n\nОн пропадёт из списков${future ? `, будущие уроки (${future}) отменятся` : ''}. Проведённые уроки и оплаты останутся в статистике.`);
+      if (!ok) return;
+      await run(() => api('/api/admin/student-delete', { id: u.id, notify: true }), 'Ученик удалён');
+      closeSheet();
+      if (S.tab === 'students') adminStudents(); else RENDER[S.tab]();
     };
     $('#bookU').onclick = () => pickSlotSheet(`Записать: ${esc(u.name)}`, async (date, start) => {
       await run(() => api('/api/admin/book', { user_id: u.id, date, start }), 'Ученик записан');
@@ -893,8 +953,9 @@ async function go(tab) {
   S.tab = tab;
   closeSheet();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
-  view.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
-  try { await RENDER[tab](); } catch (e) { view.innerHTML = `<div class="card">${empty('triangle-alert', esc(e.message))}</div>`; }
+  // Скелет — только если экран не отрисовался почти сразу (данных ещё нет в памяти)
+  const sk = setTimeout(() => { if (S.tab === tab) view.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>'; }, 90);
+  try { await RENDER[tab](); } catch (e) { view.innerHTML = `<div class="card">${empty('triangle-alert', esc(e.message))}</div>`; } finally { clearTimeout(sk); }
   window.scrollTo({ top: 0 });
 }
 
@@ -939,5 +1000,18 @@ async function go(tab) {
   $('#tabs').querySelectorAll('button').forEach((b) => b.onclick = () => { haptic(); go(b.dataset.tab); });
   if (admin) api('/api/admin/settings').then((s) => { S.settings = s; }).catch(() => {});
   else loadMonth(S.month).catch(() => {}); // прогрев календаря
-  go(tabs[0].id);
+  await go(tabs[0].id);
+  setTimeout(prefetch, 400);
 })();
+
+/** Заранее подгружаем данные других вкладок, чтобы переключение было мгновенным. */
+function prefetch() {
+  const ym = S.month;
+  const [f, t] = monthBounds(ym);
+  const paths = S.me.admin
+    ? ['/api/admin/students', '/api/admin/logs?limit=500', '/api/admin/settings', `/api/admin/month-detail?from=${f}&to=${t}`]
+    : ['/api/my'];
+  paths.forEach((p, i) => setTimeout(() => api(p).catch(() => {}), i * 150));
+  loadMonth(ym).catch(() => {});
+  loadMonth(nextYm(ym, 1)).catch(() => {});
+}

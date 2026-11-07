@@ -21,6 +21,8 @@ crons = ["* * * * *"]
 [vars]
 TZ_NAME = "Asia/Ho_Chi_Minh"
 ADMIN_IDS = "344375075"
+# Данные бота (публичные) — чтобы не вызывать getMe при каждом холодном старте
+BOT_INFO = '{"id":9095359041,"is_bot":true,"first_name":"Английский с Таней","username":"tanya_eng_bot","can_join_groups":true,"can_read_all_group_messages":false,"supports_inline_queries":false,"can_connect_to_business":false,"has_main_web_app":true}'
 
 # Секреты (задаются командой `npx wrangler secret put ИМЯ`, в репозиторий не попадают):
 #   BOT_TOKEN       — токен бота от @BotFather
