@@ -87,7 +87,16 @@ function localOf(ms) {
   const p = Object.fromEntries(zFmt.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
 }
-const tzName = (tz) => (S.me.timezones.find(([z]) => z === tz)?.[2] || tz);
+/** Подпись пояса: из списка, иначе «Город (UTC+N)» по данным браузера. */
+function tzName(tz) {
+  const known = S.me.timezones.find(([z]) => z === tz)?.[2];
+  if (known) return known;
+  let city = tz.split('/').pop().replace(/_/g, ' ');
+  try { city = new Intl.DisplayNames(['ru'], { type: 'region' }) && new Intl.DateTimeFormat('ru-RU', { timeZone: tz, timeZoneName: 'longGeneric' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value || city; } catch { /* оставим город */ }
+  let off = '';
+  try { off = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value.replace('GMT', 'UTC') || ''; } catch { /* без смещения */ }
+  return off ? `${city} (${off === 'UTC' ? 'UTC+0' : off})` : city;
+}
 const loadLevel = (d) => (d.off ? -1 : d.load === 0 ? 0 : d.load < 0.34 ? 1 : d.load < 0.67 ? 2 : d.load < 1 ? 3 : 4);
 const initials = (n) => (n || '?').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 const haptic = (t = 'light') => tg?.HapticFeedback?.impactOccurred(t);

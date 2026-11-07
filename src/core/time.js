@@ -78,7 +78,11 @@ export const TIMEZONES = [
   ['Asia/Makassar', 'Бали'], ['Europe/Berlin', 'Берлин / Европа'], ['Europe/London', 'Лондон'], ['America/New_York', 'Нью-Йорк'],
 ];
 export function tzLabel(tz, ms = Date.now()) {
-  const name = TIMEZONES.find(([z]) => z === tz)?.[1] || tz.split('/').pop().replace(/_/g, ' ');
+  let name = TIMEZONES.find(([z]) => z === tz)?.[1];
+  if (!name) {
+    try { name = new Intl.DateTimeFormat('ru-RU', { timeZone: tz, timeZoneName: 'longGeneric' }).formatToParts(new Date(ms)).find((p) => p.type === 'timeZoneName')?.value; } catch { /* ниже */ }
+    name ||= tz.split('/').pop().replace(/_/g, ' ');
+  }
   const off = tzOffset(tz, ms);
   const h = Math.trunc(Math.abs(off) / 60), m = Math.abs(off) % 60;
   return `${name} (UTC${off >= 0 ? '+' : '−'}${h}${m ? ':' + String(m).padStart(2, '0') : ''})`;
