@@ -30,13 +30,19 @@ export function createNotifier(api, store) {
       return `${fmtDate(v.date, opts)}, ${v.time}${tz && vtz !== store.cfg.tz || tz === 'always' ? ` (${tzShort(vtz)})` : ''}`;
     },
     whenDate(u, date, time) { return fmtDate(store.toTz(date, time, store.tzOf(u)).date); },
+    /** К каждому уведомлению добавляем кнопку «🏠 Меню» (открывает меню новым сообщением, уведомление остаётся). */
+    withHome(extra = {}) {
+      const kb = extra.reply_markup instanceof InlineKeyboard ? extra.reply_markup : new InlineKeyboard();
+      return { ...extra, reply_markup: kb.row().text('🏠 Меню', 'homen') };
+    },
     async toUser(u, text, extra = {}) {
       if (!u?.tg_id) return false; // ученик без Telegram — сообщения не отправляются
-      try { await api.sendMessage(u.tg_id, text, { parse_mode: 'HTML', ...extra }); return true; } catch (e) { console.error('notify user', e.message); return false; }
+      try { await api.sendMessage(u.tg_id, text, { parse_mode: 'HTML', ...N.withHome(extra) }); return true; } catch (e) { console.error('notify user', e.message); return false; }
     },
     async toAdmins(text, extra = {}) {
+      const opts = { parse_mode: 'HTML', ...N.withHome(extra) };
       for (const id of store.isAdminList()) {
-        await api.sendMessage(id, text, { parse_mode: 'HTML', ...extra }).catch((e) => console.error('notify admin', e.message));
+        await api.sendMessage(id, text, opts).catch((e) => console.error('notify admin', e.message));
       }
     },
 
@@ -93,7 +99,7 @@ export function createNotifier(api, store) {
       const s = await store.getSettings();
       const caption = `🧾 <b>Чек об оплате</b> от ${who(r)}\nЦена урока: ${money(store.priceOf(r, s), s)} · Баланс сейчас: ${lessons(r.balance)}` +
         (r.caption ? `\nКомментарий: ${esc(r.caption)}` : '');
-      const kb = new InlineKeyboard().text('✅ Зачислить', `rc|ok|${r.id}`).text('❌ Отклонить', `rc|no|${r.id}`);
+      const kb = new InlineKeyboard().text('✅ Зачислить', `rc|ok|${r.id}`).text('❌ Отклонить', `rc|no|${r.id}`).row().text('🏠 Меню', 'homen');
       for (const id of store.isAdminList()) {
         const opts = { caption, parse_mode: 'HTML', reply_markup: kb };
         const p = r.file_type === 'photo' ? api.sendPhoto(id, r.file_id, opts) : api.sendDocument(id, r.file_id, opts);
