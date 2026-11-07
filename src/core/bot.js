@@ -59,7 +59,7 @@ export function createBot({ token, store, cfg, botInfo }) {
     const opts = { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true }, ...extra };
     const msg = ctx.callbackQuery?.message;
     // Обновляем на месте только экраны меню; уведомления (заявки, напоминания, чеки) не перезаписываем
-    const isScreen = msg?.reply_markup?.inline_keyboard?.flat().some((b) => b.callback_data === 'home' || /^(reg|tzr)\|/.test(b.callback_data || ''));
+    const isScreen = msg?.reply_markup?.inline_keyboard?.flat().some((b) => b.callback_data === 'home' || /^(reg|tzr|m)\|/.test(b.callback_data || ''));
     if (msg && isScreen && !msg.photo && !msg.document) {
       try { return await ctx.editMessageText(text, opts); } catch (e) {
         if (/not modified/i.test(e.message)) return;
