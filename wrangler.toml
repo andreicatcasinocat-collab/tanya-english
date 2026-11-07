@@ -4,6 +4,10 @@ main = "src/worker.js"
 compatibility_date = "2025-09-01"
 workers_dev = true
 
+# Запускать Worker рядом с базой D1: меньше задержек на каждый запрос к базе
+[placement]
+mode = "smart"
+
 [assets]
 directory = "./webapp"
 binding = "ASSETS"

@@ -46,7 +46,7 @@ export function createStore(sql, cfg) {
       await S.loadAdmins(true);
     },
     async getSettings(force = false) {
-      if (!force && settingsCache && Date.now() - settingsAt < 5000) return settingsCache;
+      if (!force && settingsCache && Date.now() - settingsAt < 60000) return settingsCache;
       const rows = await sql.all('SELECT key, value FROM settings');
       settingsCache = { ...DEFAULT_SETTINGS, ...Object.fromEntries(rows.map((r) => [r.key, r.value])) };
       settingsAt = Date.now();

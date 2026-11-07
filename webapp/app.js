@@ -960,6 +960,11 @@ async function go(tab) {
 }
 
 (async function init() {
+  // Календарь запрашиваем сразу, параллельно с профилем — не ждём один ответ, чтобы начать второй
+  const d0 = new Date();
+  const ym0 = `${d0.getFullYear()}-${pad(d0.getMonth() + 1)}`;
+  const [mf, mt] = monthBounds(ym0);
+  api(`/api/month?from=${addDays(mf, -1)}&to=${addDays(mt, 1)}`).catch(() => {});
   try {
     S.me = await api('/api/me');
   } catch (e) {
