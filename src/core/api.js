@@ -170,6 +170,12 @@ export function createApi({ store, cfg, bot, N, applyStatus, finishRegistration 
         receipts: (await store.userReceipts(id)).map(({ file_id, ...r }) => r), logs: await store.getLogs({ userId: id, limit: 50 }),
       };
     },
+    'GET /api/admin/tg-candidates': async () => (await store.tgCandidates()).filter((u) => !store.isAdmin(u.tg_id)),
+    'POST /api/admin/student-merge': async ({ tgId, body }) => {
+      const u = await store.mergeTelegram(Number(body.card_id), Number(body.user_id), tgId, 'manual');
+      await N.toUser(u, `✅ Ваш Telegram подключён к карточке ученика у преподавателя.\n💳 Оплаченных уроков: <b>${u.balance}</b>`);
+      return u;
+    },
     'GET /api/admin/month-detail': ({ q }) => store.monthDetail(...range(q)),
     'POST /api/admin/student-delete': async ({ tgId, body }) => {
       const { user, cancelled } = await store.deleteStudent(Number(body.id), tgId);
@@ -184,7 +190,7 @@ export function createApi({ store, cfg, bot, N, applyStatus, finishRegistration 
       const u = await store.getUser(Number(body.id));
       need(u && !u.tg_id, 'У ученика уже есть Telegram');
       const code = await store.ensureLinkCode(u.id);
-      return { url: `https://t.me/${bot.botInfo.username}?start=link_${code}` };
+      return { url: `https://t.me/${bot.botInfo.username}?start=link_${code}`, bot: bot.botInfo.username };
     },
     'POST /api/admin/remind-payment': async ({ tgId, body }) => {
       const u = await store.getUser(Number(body.id));
@@ -275,6 +281,7 @@ export function createApi({ store, cfg, bot, N, applyStatus, finishRegistration 
       return json(401, { error: 'Откройте приложение из Telegram' });
     }
     const u = await store.upsertTgUser(tgUser);
+    if (u._justLinked) await N.toAdmins(`🔗 ${u.name}${u.username ? ` (@${u.username})` : ''} открыл бота — Telegram автоматически привязан к его карточке.`);
     const admin = store.isAdmin(tgUser.id);
     if (u.blocked && !admin) return json(403, { error: 'Доступ закрыт' });
     if (url.pathname.startsWith('/api/admin/') && !admin) return json(403, { error: 'Только для преподавателя' });

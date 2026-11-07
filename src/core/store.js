@@ -24,6 +24,12 @@ export const DEFAULT_SETTINGS = {
 const ACTIVE = "('pending','confirmed')";
 const CHARGED = ['done', 'late_cancel', 'no_show'];
 
+/** «@Ivan_Petrov», «t.me/ivan_petrov» → «ivan_petrov». Пусто, если ник некорректный. */
+export function normUsername(v) {
+  const u = String(v || '').trim().replace(/^https?:\/\/(t\.me|telegram\.me)\//i, '').replace(/^@/, '').toLowerCase();
+  return /^[a-z0-9_]{4,32}$/.test(u) ? u : '';
+}
+
 export function createStore(sql, cfg) {
   const T = makeTime(cfg.tz);
   let settingsCache = null;
@@ -98,9 +104,21 @@ export function createStore(sql, cfg) {
         ON CONFLICT(tg_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`, [tgId, JSON.stringify(data)]);
     },
 
+    // ---------- текущий экран бота ----------
+    async getScreen(chatId) { return (await sql.first('SELECT message_id FROM screens WHERE chat_id = ?', [chatId]))?.message_id || null; },
+    setScreen: (chatId, messageId) => sql.run(`INSERT INTO screens(chat_id, message_id) VALUES (?, ?)
+      ON CONFLICT(chat_id) DO UPDATE SET message_id = excluded.message_id`, [chatId, messageId]),
+
     // ---------- users ----------
     async upsertTgUser({ id, first_name, last_name, username }) {
       const u = await S.userByTg(id);
+      if (u && !u.registered && !u.manual && username && !cfg.adminIds.has(Number(id))) {
+        const card = await S.manualCardByUsername(username);
+        if (card) {
+          await S.mergeTelegram(card.id, u.id, id, 'username');
+          return { ...(await S.getUser(card.id)), _justLinked: true };
+        }
+      }
       if (u) {
         if ((u.username || null) !== (username || null)) {
           await sql.run('UPDATE users SET username = ? WHERE id = ?', [username || null, u.id]);
@@ -108,19 +126,38 @@ export function createStore(sql, cfg) {
         }
         return u;
       }
+      // Если преподаватель заранее добавил ученика с этим @username — привязываем Telegram к его карточке
+      const card = cfg.adminIds.has(Number(id)) ? null : await S.manualCardByUsername(username);
+      if (card) {
+        await sql.run('UPDATE users SET tg_id = ?, username = ?, registered = 1, deleted = 0, link_code = NULL WHERE id = ?', [id, username, card.id]);
+        await S.log(id, 'user.linked', { user_id: card.id, via: 'username' });
+        return { ...(await S.getUser(card.id)), _justLinked: true };
+      }
       await sql.run('INSERT OR IGNORE INTO users(tg_id, name, username) VALUES (?, ?, ?)',
         [id, [first_name, last_name].filter(Boolean).join(' ') || 'Без имени', username || null]);
       return S.userByTg(id);
     },
+    async manualCardByUsername(username) {
+      const u = normUsername(username);
+      if (!u) return null;
+      return sql.first('SELECT * FROM users WHERE tg_id IS NULL AND lower(username) = ? AND COALESCE(deleted, 0) = 0 ORDER BY id LIMIT 1', [u]);
+    },
     userByTg: (tgId) => sql.first('SELECT * FROM users WHERE tg_id = ?', [tgId]),
     getUser: (id) => sql.first('SELECT * FROM users WHERE id = ?', [id]),
     async updateUser(id, fields, actorTgId) {
-      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz', 'tz_auto', 'deleted'];
+      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz', 'tz_auto', 'deleted', 'username'];
+      if ('username' in fields) {
+        const cur = await S.getUser(id);
+        if (cur?.tg_id) delete fields.username; // у подключённых ник берётся из Telegram
+        else if (fields.username && !normUsername(fields.username)) throw new Error('Ник в Telegram выглядит неверно. Пример: @ivan_petrov');
+        else fields.username = normUsername(fields.username) || null;
+      }
       if ('tz' in fields && !isValidTz(fields.tz)) throw new Error('Неизвестный часовой пояс');
       const keys = Object.keys(fields).filter((k) => allowed.includes(k));
       if (!keys.length) return S.getUser(id);
       const vals = keys.map((k) => {
         if (k === 'price') return fields[k] === '' || fields[k] == null ? null : Number(fields[k]);
+        if (k === 'username') return fields[k];
         if (k.startsWith('n_') || k === 'blocked' || k === 'registered' || k === 'tz_auto' || k === 'deleted') return fields[k] ? 1 : 0;
         return String(fields[k] ?? '').slice(0, 2000);
       });
@@ -129,12 +166,19 @@ export function createStore(sql, cfg) {
       return S.getUser(id);
     },
     /** Ученик без Telegram, добавленный преподавателем. */
-    async addManualStudent({ name, phone, level, goal, notes, price }, actorTgId) {
+    async addManualStudent({ name, phone, level, goal, notes, price, username }, actorTgId) {
       if (!name?.trim()) throw new Error('Укажите имя');
+      const uname = username ? normUsername(username) : '';
+      if (username && !uname) throw new Error('Ник в Telegram выглядит неверно. Пример: @ivan_petrov');
+      // Если этот человек уже писал боту — сразу предлагаем объединить, а не создаём дубликат
+      if (uname) {
+        const tgUser = await sql.first('SELECT * FROM users WHERE tg_id IS NOT NULL AND lower(username) = ? AND COALESCE(deleted, 0) = 0', [uname]);
+        if (tgUser) throw new Error(`@${uname} уже писал боту — он есть в списке как «${tgUser.name}». Откройте его карточку и укажите цену и заметки там.`);
+      }
       const code = randomCode();
-      const r = await sql.run(`INSERT INTO users(name, phone, level, goal, notes, price, registered, manual, link_code)
-        VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)`,
-      [name.trim().slice(0, 80), phone || null, level || null, goal || null, notes || '', price ? Number(price) : null, code]);
+      const r = await sql.run(`INSERT INTO users(name, phone, level, goal, notes, price, registered, manual, link_code, username)
+        VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+      [name.trim().slice(0, 80), phone || null, level || null, goal || null, notes || '', price ? Number(price) : null, code, uname || null]);
       await S.log(actorTgId, 'user.manual_add', { user_id: r.lastId, name });
       return S.getUser(r.lastId);
     },
@@ -150,18 +194,36 @@ export function createStore(sql, cfg) {
       const card = await sql.first('SELECT * FROM users WHERE link_code = ? AND tg_id IS NULL', [code]);
       if (!card) return null;
       const existing = await S.userByTg(tgUser.id);
-      if (existing) {
-        // Переносим историю «пустой» записи Telegram в карточку и удаляем дубликат
-        await sql.run('UPDATE bookings SET user_id = ? WHERE user_id = ?', [card.id, existing.id]);
-        await sql.run('UPDATE payments SET user_id = ? WHERE user_id = ?', [card.id, existing.id]);
-        await sql.run('UPDATE receipts SET user_id = ? WHERE user_id = ?', [card.id, existing.id]);
-        await sql.run('UPDATE users SET balance = balance + ? WHERE id = ?', [existing.balance || 0, card.id]);
-        await sql.run('DELETE FROM users WHERE id = ?', [existing.id]);
-      }
-      await sql.run('UPDATE users SET tg_id = ?, username = ?, link_code = NULL, registered = 1 WHERE id = ?', [tgUser.id, tgUser.username || null, card.id]);
-      await S.log(tgUser.id, 'user.linked', { user_id: card.id });
+      if (existing && existing.id !== card.id) return S.mergeTelegram(card.id, existing.id, tgUser.id, 'link');
+      await sql.run('UPDATE users SET tg_id = ?, username = ?, link_code = NULL, registered = 1, deleted = 0 WHERE id = ?', [tgUser.id, tgUser.username || null, card.id]);
+      await S.log(tgUser.id, 'user.linked', { user_id: card.id, via: 'link' });
       return S.getUser(card.id);
     },
+    /**
+     * Объединить карточку, созданную вручную (без Telegram), с аккаунтом Telegram, который написал боту.
+     * Уроки, оплаты, чеки и баланс переносятся в карточку; данные Telegram (ник, пояс, уведомления) — тоже.
+     */
+    async mergeTelegram(cardId, tgUserId, actorTgId, via = 'manual') {
+      const card = await S.getUser(cardId);
+      const other = await S.getUser(tgUserId);
+      if (!card || !other) throw new Error('Ученик не найден');
+      if (card.tg_id) throw new Error('У этой карточки уже есть Telegram');
+      if (!other.tg_id) throw new Error('У выбранного ученика нет Telegram');
+      if (cfg.adminIds.has(Number(other.tg_id))) throw new Error('Это аккаунт преподавателя');
+      for (const t of ['bookings', 'payments', 'receipts']) await sql.run(`UPDATE ${t} SET user_id = ? WHERE user_id = ?`, [card.id, other.id]);
+      await sql.run('DELETE FROM users WHERE id = ?', [other.id]);
+      await sql.run(`UPDATE users SET tg_id = ?, username = ?, tz = ?, tz_auto = ?, n_24h = ?, n_2h = ?, n_15m = ?, n_done = ?,
+        balance = balance + ?, registered = 1, deleted = 0, link_code = NULL,
+        level = COALESCE(level, ?), goal = COALESCE(goal, ?) WHERE id = ?`,
+      [other.tg_id, other.username, other.tz || card.tz, other.tz_auto ?? 1, other.n_24h ?? 1, other.n_2h ?? 1, other.n_15m ?? 1, other.n_done ?? 1,
+        other.balance || 0, other.level, other.goal, card.id]);
+      await S.log(actorTgId, 'user.linked', { user_id: card.id, merged_from: other.id, name: other.name, via });
+      return S.getUser(card.id);
+    },
+    /** Аккаунты Telegram, которые писали боту, — кандидаты для привязки к карточке. */
+    tgCandidates: () => sql.all(`SELECT u.id, u.tg_id, u.name, u.username, u.registered, u.created_at,
+        (SELECT COUNT(*) FROM bookings b WHERE b.user_id = u.id) AS lessons
+      FROM users u WHERE u.tg_id IS NOT NULL AND COALESCE(u.deleted, 0) = 0 ORDER BY u.id DESC LIMIT 50`),
     async listStudents() {
       const today = T.now().date;
       return sql.all(`

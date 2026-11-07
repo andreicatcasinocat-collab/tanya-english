@@ -372,3 +372,12 @@ body.sheet-open .sheet-backdrop { opacity: 1; pointer-events: auto; }
 .item.busy, .day.busy { opacity: .6; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .tabs button:active { transform: scale(.94); }
+
+/* ---------- переключатель оформления ---------- */
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--surface-2); padding: 5px; border-radius: 16px; }
+.seg-btn { border: 0; background: transparent; border-radius: 12px; padding: 10px 4px; display: grid; justify-items: center; gap: 4px;
+  font-weight: 800; font-size: 12px; color: var(--muted); cursor: pointer; transition: all .2s var(--ease); }
+.seg-btn svg { width: 20px; height: 20px; }
+.seg-btn.on { background: var(--surface); color: var(--accent); box-shadow: var(--shadow); }
+.connect { background: var(--surface-2); box-shadow: none; border: 1px dashed var(--line); padding: 14px; }
+.connect .field input { background: var(--surface); }

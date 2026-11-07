@@ -2,7 +2,19 @@
 const tg = window.Telegram?.WebApp;
 tg?.ready();
 tg?.expand();
-if (tg?.colorScheme) document.documentElement.dataset.theme = tg.colorScheme;
+// ---------- оформление: светлая / тёмная / как на устройстве (запоминается на этом устройстве) ----------
+const darkMQ = window.matchMedia?.('(prefers-color-scheme: dark)');
+function themePref() { try { return localStorage.getItem('theme') || 'auto'; } catch { return 'auto'; } }
+function applyTheme() {
+  const pref = themePref();
+  const t = pref === 'auto' ? (tg?.colorScheme || (darkMQ?.matches ? 'dark' : 'light')) : pref;
+  document.documentElement.dataset.theme = t;
+  const bg = t === 'dark' ? '#0f1116' : '#f6f2ea';
+  try { tg?.setHeaderColor?.(bg); tg?.setBackgroundColor?.(bg); } catch { /* старые версии Telegram */ }
+}
+applyTheme();
+tg?.onEvent?.('themeChanged', applyTheme);
+darkMQ?.addEventListener?.('change', applyTheme);
 
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
@@ -154,6 +166,21 @@ function avColor(name = '') {
   return `hsl(${h} 62% 58%)`;
 }
 const avatar = (name, manual, size = '') => `<div class="avatar ${size === true ? 'lg' : size}" style="--av:${avColor(name)}">${initials(name)}</div>`;
+/** Карточка выбора оформления. */
+function themeCard() {
+  const cur = themePref();
+  const opt = (v, icon, label) => `<button class="seg-btn ${cur === v ? 'on' : ''}" data-theme-set="${v}">${ic(icon)}<span>${label}</span></button>`;
+  return `<section class="card"><div class="card-head">${H('palette', 'Оформление')}</div>
+    <div class="seg">${opt('light', 'sun', 'Светлая')}${opt('dark', 'moon', 'Тёмная')}${opt('auto', 'smartphone', 'Как на устройстве')}</div></section>`;
+}
+function bindTheme(root) {
+  root.querySelectorAll('[data-theme-set]').forEach((b) => b.onclick = () => {
+    try { localStorage.setItem('theme', b.dataset.themeSet); } catch { /* приватный режим */ }
+    applyTheme();
+    root.querySelectorAll('[data-theme-set]').forEach((x) => x.classList.toggle('on', x === b));
+    haptic();
+  });
+}
 const empty = (icon, text) => `<div class="empty-state"><div class="ei">${ic(icon)}</div><div>${text}</div></div>`;
 const loadLevel = (d) => (d.off ? -1 : d.load === 0 ? 0 : d.load < 0.34 ? 1 : d.load < 0.67 ? 2 : d.load < 1 ? 3 : 4);
 const initials = (n) => (n || '?').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
@@ -379,6 +406,7 @@ async function studentNotif() {
   const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const known = S.me.timezones.some(([z]) => z === S.tz);
   view.innerHTML = `
+    ${themeCard()}
     <section class="card">
       <div class="card-head">${H('globe', 'Часовой пояс')}</div>
       <p class="muted small" style="margin-top:0">Время уроков в календаре и в сообщениях бота показывается по вашему поясу. Преподаватель видит своё время — всё пересчитывается автоматически.</p>
@@ -398,6 +426,7 @@ async function studentNotif() {
   const setTz = (tz, auto) => run(() => api('/api/tz', { tz, auto, force: auto }), 'Часовой пояс сохранён').then((r) => {
     S.tz = r.tz; S.me.tz = r.tz; S.me.user.tz_auto = r.auto ? 1 : 0; zFmt = null; S.monthCache.clear(); studentNotif();
   });
+  bindTheme(view);
   $('#tzSel').onchange = (e) => setTz(e.target.value, false);
   $('#tzAutoCb').onchange = (e) => (e.target.checked && detected ? setTz(detected, true) : setTz(S.tz, false));
   view.querySelectorAll('[data-k]').forEach((cb) => cb.onchange = () =>
@@ -727,7 +756,7 @@ async function adminStudents() {
     $('#sl').innerHTML = f.length ? f.map((s) => `
       <button class="item" data-u="${s.id}">
         <div class="row nowrap" style="min-width:0">${avatar(s.name, !s.tg_id)}
-          <div style="min-width:0"><div class="t">${esc(s.name)} ${s.blocked ? '🚫' : ''}${s.tg_id ? '' : ` <span class="tag">${ic('notebook')}без Telegram</span>`}</div>
+          <div style="min-width:0"><div class="t">${esc(s.name)} ${s.blocked ? '🚫' : ''}${s.tg_id ? '' : ` <span class="tag">${ic(s.username ? 'hourglass' : 'notebook')}${s.username ? 'ждём @' + esc(s.username) : 'без Telegram'}</span>`}</div>
           <div class="s">${money(s.price ?? S.me.settings.price)} · уроков: ${s.lessons_done}${s.next_lesson ? ` · след.: ${fmt(s.next_lesson.slice(0, 10), { day: 'numeric', month: 'short' })} ${s.next_lesson.slice(11)}` : ''}</div></div></div>
         <span class="pill ${s.balance < 1 ? 'neg' : ''}">${s.balance} ур.</span>
       </button>`).join('') : empty('search-x', 'Никого не найдено');
@@ -747,9 +776,10 @@ async function adminStudents() {
 function addStudentSheet() {
   openSheet(`
     <h2>Новый ученик</h2>
-    <p class="muted small">Ученик добавляется только для учёта: ему ничего не отправляется в Telegram. Позже при желании можно отправить ссылку-приглашение, чтобы подключить его Telegram.</p>
+    <p class="muted small">Ученику ничего не отправляется. Если укажете его ник в Telegram — карточка привяжется сама, как только он откроет бота.</p>
     <div class="form">
       <div class="field"><label>Имя *</label><input id="nn" placeholder="Мария Иванова" autocomplete="off"></div>
+      <div class="field"><label>Ник в Telegram (необязательно)</label><input id="nu" placeholder="@maria_ivanova" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
       <div class="two">
         <div class="field"><label>Цена урока, ${S.cur}</label><input id="np" type="number" inputmode="numeric" placeholder="${S.me.settings.price}"></div>
         <div class="field"><label>Телефон</label><input id="nph" type="tel" placeholder="необязательно"></div>
@@ -766,7 +796,7 @@ function addStudentSheet() {
       <button class="btn primary" id="saveNew">Добавить ученика</button>
     </div>`, () => {
     $('#saveNew').onclick = async () => {
-      const u = await run(() => api('/api/admin/student-add', { name: $('#nn').value, price: $('#np').value, phone: $('#nph').value, level: $('#nl').value, goal: $('#ng').value, notes: $('#nt').value }), 'Ученик добавлен');
+      const u = await run(() => api('/api/admin/student-add', { name: $('#nn').value, username: $('#nu').value, price: $('#np').value, phone: $('#nph').value, level: $('#nl').value, goal: $('#ng').value, notes: $('#nt').value }), 'Ученик добавлен');
       const n = Number($('#nb').value);
       if (n) await run(() => api('/api/admin/payment', { user_id: u.id, amount: Number($('#nbs').value) || 0, lessons: n, note: 'стартовый баланс' }));
       closeSheet();
@@ -811,7 +841,18 @@ async function studentSheet(id) {
       </div>
       <div class="field"><label>Заметки</label><textarea id="nt">${esc(u.notes)}</textarea></div>
       <div class="two"><button class="btn" id="saveU">Сохранить</button><button class="btn ${u.blocked ? 'ok' : 'bad'}" id="blkU">${u.blocked ? 'Разблокировать' : 'Заблокировать'}</button></div>
-      ${u.tg_id ? `<button class="btn ghost" id="remindU">${ic('bell-ring')}Напомнить об оплате</button>` : `<button class="btn ghost" id="linkU">${ic('link')}Ссылка-приглашение (по желанию)</button>`}
+      ${u.tg_id ? `<button class="btn ghost" id="remindU">${ic('bell-ring')}Напомнить об оплате</button>` : `
+      <section class="card connect">
+        <h3 class="section-title">${ic('link')}Подключить Telegram</h3>
+        <p class="muted small" style="margin:6px 0 10px">Карточку можно вести и без Telegram. Когда захотите подключить — выберите удобный способ:</p>
+        <div class="field"><label>1 · По нику — привяжется сам, когда ученик откроет бота</label>
+          <div class="row nowrap"><input id="uname" value="${u.username ? '@' + esc(u.username) : ''}" placeholder="@username" autocapitalize="off" spellcheck="false" style="flex:1;min-width:0"><button class="btn primary sm" id="unameSave">${ic('save')}</button></div></div>
+        ${u.username ? `<div class="note" style="margin-top:8px">${ic('hourglass')}<div>Ждём, когда <b>@${esc(u.username)}</b> откроет бота. Отправьте ему ссылку на бота — любую.</div></div>` : ''}
+        <div class="field" style="margin-top:12px"><label>2 · Он уже писал боту</label>
+          <button class="btn ghost block" id="pickTg">${ic('users')}Выбрать и объединить карточки</button></div>
+        <div class="field" style="margin-top:12px"><label>3 · Личная ссылка-приглашение</label>
+          <button class="btn ghost block" id="linkU">${ic('send')}Отправить ссылку ученику</button></div>
+      </section>`}
       <h3 class="section-title">${ic('banknote')}Внести оплату</h3>
       <div class="two">
         <div class="field"><label>Уроков</label><input id="pl" type="number" inputmode="numeric" placeholder="4"></div>
@@ -836,9 +877,22 @@ async function studentSheet(id) {
     const link = $('#linkU');
     if (link) link.onclick = async () => {
       const r = await run(() => api('/api/admin/student-link', { id: u.id }));
-      try { await navigator.clipboard.writeText(r.url); toast('Ссылка скопирована'); } catch { /* покажем ниже */ }
-      openSheet(`<h2>Ссылка-приглашение</h2><p class="muted small">Отправьте её ученику, только если хотите подключить его Telegram. Баланс и история сохранятся.</p><div class="pre select">${esc(r.url)}</div><button class="btn ghost block" id="back" style="margin-top:12px">Назад</button>`, () => { $('#back').onclick = () => studentSheet(id); });
+      const text = `Здравствуйте! Это бот для записи на уроки английского — откройте, пожалуйста, по ссылке:`;
+      const share = `https://t.me/share/url?url=${encodeURIComponent(r.url)}&text=${encodeURIComponent(text)}`;
+      openSheet(`<h2>Ссылка-приглашение</h2>
+        <p class="muted small">Когда ученик откроет бота по этой ссылке, его Telegram привяжется к карточке «${esc(u.name)}» вместе с уроками и балансом.</p>
+        <div class="pre select">${esc(r.url)}</div>
+        <div class="actions"><button class="btn primary" id="shareL">${ic('send')}Отправить в Telegram</button><button class="btn" id="copyL">${ic('copy')}Скопировать</button></div>
+        <button class="btn ghost block" id="back" style="margin-top:8px">${ic('arrow-left')}Назад</button>`, () => {
+        $('#shareL').onclick = () => (tg?.openTelegramLink ? tg.openTelegramLink(share) : window.open(share, '_blank'));
+        $('#copyL').onclick = async () => { try { await navigator.clipboard.writeText(r.url); toast('Ссылка скопирована'); } catch { toast('Выделите ссылку и скопируйте'); } };
+        $('#back').onclick = () => studentSheet(id);
+      });
     };
+    const us = $('#unameSave');
+    if (us) us.onclick = () => run(() => api('/api/admin/student', { id: u.id, username: $('#uname').value }), 'Ник сохранён — ждём, когда ученик откроет бота').then(() => studentSheet(id));
+    const pk = $('#pickTg');
+    if (pk) pk.onclick = () => pickTelegramSheet(u, () => studentSheet(id));
     $('#payU').onclick = () => {
       if (!$('#pa').value && !$('#pl').value) return toast('Укажите уроки или сумму');
       run(() => api('/api/admin/payment', { user_id: u.id, amount: Number($('#pa').value) || 0, lessons: Number($('#pl').value) || 0, note: $('#pn').value }), 'Оплата записана').then(() => studentSheet(id));
@@ -855,6 +909,26 @@ async function studentSheet(id) {
       await run(() => api('/api/admin/book', { user_id: u.id, date, start }), 'Ученик записан');
       S.monthCache.clear();
       studentSheet(id);
+    });
+  });
+}
+
+/** Выбор аккаунта Telegram, который уже писал боту, и объединение с карточкой. */
+async function pickTelegramSheet(card, back) {
+  openSheet('<div class="skeleton" style="height:60px"></div><div class="skeleton" style="margin-top:10px"></div>');
+  const list = (await api('/api/admin/tg-candidates')).filter((x) => x.id !== card.id);
+  openSheet(`<h2>Кто из них — ${esc(card.name)}?</h2>
+    <p class="muted small">Здесь все, кто открывал бота. После объединения останется одна карточка «${esc(card.name)}» — с Telegram, уроками, оплатами и балансом обеих записей.</p>
+    <div class="list">${list.length ? list.map((x) => `<button class="item" data-pick="${x.id}"><div class="row nowrap" style="min-width:0">${avatar(x.name)}<div style="min-width:0"><div class="t">${esc(x.name)}</div>
+      <div class="s">${x.username ? '@' + esc(x.username) + ' · ' : ''}${x.registered ? `уроков: ${x.lessons}` : 'ещё не закончил регистрацию'}</div></div></div>${ic('chevron-right')}</button>`).join('')
+      : empty('inbox', 'Пока никто, кроме уже подключённых, боту не писал')}</div>
+    <button class="btn ghost block" id="back" style="margin-top:12px">${ic('arrow-left')}Назад</button>`, (sh) => {
+    $('#back').onclick = back;
+    sh.querySelectorAll('[data-pick]').forEach((b) => b.onclick = async () => {
+      const x = list.find((y) => y.id == b.dataset.pick);
+      if (!(await confirmBox(`Объединить «${card.name}» и «${x.name}${x.username ? ' @' + x.username : ''}»?`))) return;
+      await run(() => api('/api/admin/student-merge', { card_id: card.id, user_id: x.id }), 'Telegram подключён');
+      back();
     });
   });
 }
@@ -891,6 +965,7 @@ async function adminSettings() {
   S.settings = s;
   const days = s.work_days.split(',');
   view.innerHTML = `
+    ${themeCard()}
     <section class="card">
       <div class="card-head">${H('calendar-cog', 'Расписание и правила')}</div>
       <form class="form" id="sf">
@@ -928,6 +1003,7 @@ async function adminSettings() {
       <div class="row">${[['bookings', 'Уроки'], ['students', 'Ученики'], ['payments', 'Оплаты'], ['logs', 'Журнал']].map(([k, l]) => `<button class="btn ghost sm" data-exp="${k}">${l}</button>`).join('')}</div>
       <div class="muted small" style="margin-top:8px">Файл придёт вам в чат с ботом.</div>
     </section>`;
+  bindTheme(view);
   view.querySelectorAll('[data-exp]').forEach((b) => b.onclick = () => run(() => api('/api/admin/export-to-chat', { kind: b.dataset.exp }), '📤 Файл отправлен в чат с ботом'));
   $('#sf').onsubmit = (e) => {
     e.preventDefault();

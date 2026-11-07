@@ -18,7 +18,7 @@ const unhm = (t) => `${t.slice(0, 2)}:${t.slice(2)}`;
 const short = (date) => fmtDate(date, { weekday: 'short', day: 'numeric', month: 'short' });
 export const SITE_BUTTON = '🌐 Открыть сайт';
 // Состояния «жду ввод», которые сбрасываются при уходе с экрана кнопками навигации
-const TRANSIENT = ['receipt', 'hw', 'rc_custom', 'stu_pay', 'stu_note', 'stu_msg', 'broadcast', 'broadcast_confirm'];
+const TRANSIENT = ['receipt', 'hw', 'rc_custom', 'stu_pay', 'stu_note', 'stu_msg', 'stu_uname', 'broadcast', 'broadcast_confirm'];
 
 /**
  * Создаёт бота. Работает и в long polling (Mac), и через webhook (Cloudflare).
@@ -54,18 +54,31 @@ export function createBot({ token, store, cfg, botInfo }) {
     if (back) kb.text('◀️ Назад', back);
     return kb.text('🏠 Меню', 'home');
   };
-  /** Показать экран: при нажатии кнопки — обновляем то же сообщение, иначе — новое. */
+  /**
+   * Показать экран. В чате всегда один «живой» экран:
+   *  — нажатие инлайн-кнопки (в т.ч. в уведомлении) обновляет это же сообщение;
+   *  — нижняя кнопка / команда / ответ текстом: удаляем прежний экран и сообщение пользователя, показываем новый.
+   */
   async function show(ctx, text, kb, extra = {}) {
     const opts = { parse_mode: 'HTML', reply_markup: kb, link_preview_options: { is_disabled: true }, ...extra };
+    const chatId = ctx.chat?.id;
     const msg = ctx.callbackQuery?.message;
-    // Обновляем на месте только экраны меню; уведомления (заявки, напоминания, чеки) не перезаписываем
-    const isScreen = msg?.reply_markup?.inline_keyboard?.flat().some((b) => b.callback_data === 'home' || /^(reg|tzr|m)\|/.test(b.callback_data || ''));
-    if (msg && isScreen && !msg.photo && !msg.document) {
-      try { return await ctx.editMessageText(text, opts); } catch (e) {
+    if (msg) {
+      try {
+        if (msg.photo || msg.document) await ctx.editMessageCaption({ caption: text.slice(0, 1024), parse_mode: 'HTML', reply_markup: kb });
+        else await ctx.editMessageText(text, opts);
+        if (chatId) await store.setScreen(chatId, msg.message_id);
+        return;
+      } catch (e) {
         if (/not modified/i.test(e.message)) return;
       }
     }
-    return ctx.reply(text, opts);
+    if (ctx.message && chatId) ctx.deleteMessage().catch(() => {});
+    const prev = chatId ? await store.getScreen(chatId) : null;
+    if (prev && prev !== msg?.message_id) bot.api.deleteMessage(chatId, prev).catch(() => {});
+    const m = await ctx.reply(text, opts);
+    if (chatId) await store.setScreen(chatId, m.message_id);
+    return m;
   }
   async function clearTransient(ctx) {
     const st = await store.getState(ctx.from.id);
@@ -113,6 +126,11 @@ export function createBot({ token, store, cfg, botInfo }) {
     if (ctx.from) {
       ctx.u = await store.upsertTgUser(ctx.from);
       if (ctx.u.blocked && !isAdmin(ctx.from.id)) return;
+      if (ctx.u._justLinked) {
+        await N.toAdmins(`🔗 ${who(ctx.u)} открыл бота — Telegram автоматически привязан к его карточке.`,
+          { reply_markup: new InlineKeyboard().text('Открыть карточку', `stu|${ctx.u.id}`) });
+        return welcomeLinked(ctx);
+      }
     }
     await next();
   });
@@ -136,10 +154,8 @@ export function createBot({ token, store, cfg, botInfo }) {
       const linked = await store.linkTelegram(payload.slice(5), ctx.from);
       if (linked) {
         ctx.u = linked;
-        await N.toAdmins(`🔗 ${who(linked)} подключил Telegram к своей карточке.`);
-        await ctx.reply(`Здравствуйте, ${esc(linked.name)}! 👋 Ваш Telegram подключён. Преподаватель — <b>${esc(s.teacher_name)}</b>.`,
-          { parse_mode: 'HTML', reply_markup: studentMenu() });
-        return homeScreen(ctx);
+        await N.toAdmins(`🔗 ${who(linked)} подключил Telegram к своей карточке (по ссылке-приглашению).`);
+        return welcomeLinked(ctx);
       }
     }
     if (isAdmin(ctx.from.id)) {
@@ -155,6 +171,17 @@ export function createBot({ token, store, cfg, botInfo }) {
     await askName(ctx, s);
   });
 
+  /** Ученик, которого преподаватель добавил заранее, впервые открыл бота. */
+  async function welcomeLinked(ctx) {
+    const s = await store.getSettings();
+    await ctx.reply(`Здравствуйте, ${esc(ctx.u.name)}! 👋\n${esc(s.teacher_name)} уже добавила вас в список учеников — ваш Telegram подключён ✅\n\n💳 Оплаченных уроков: <b>${ctx.u.balance}</b>`,
+      { parse_mode: 'HTML', reply_markup: studentMenu() });
+    const kb = new InlineKeyboard();
+    const url = detectUrl();
+    if (url) kb.webApp('🌍 Определить автоматически', url).row();
+    kb.text('Выбрать из списка', 'tzm|list').row().text('🏠 Меню', 'home');
+    await ctx.reply('🌍 Чтобы время уроков показывалось по вашему местному времени, укажите часовой пояс:', { reply_markup: kb });
+  }
   async function askName(ctx, s) {
     s ||= await store.getSettings();
     await store.setState(ctx.from.id, { type: 'reg_name' });
@@ -403,7 +430,10 @@ export function createBot({ token, store, cfg, botInfo }) {
     if (doc && doc.file_size > 10 * 1024 * 1024) return ctx.reply('Файл слишком большой (максимум 10 МБ).', { reply_markup: nav(new InlineKeyboard(), 'm|bal') });
     await store.setState(ctx.from.id, null);
     const r = await store.addReceipt(ctx.u.id, photo ? photo.file_id : doc.file_id, photo ? 'photo' : 'document', ctx.message.caption?.slice(0, 300), ctx.from.id);
-    await ctx.reply('✅ Чек получен и отправлен преподавателю. Как только оплата будет подтверждена, баланс обновится — я пришлю уведомление.', { reply_markup: nav(new InlineKeyboard(), 'm|bal') });
+    const prev = await store.getScreen(ctx.chat.id);
+    if (prev) bot.api.deleteMessage(ctx.chat.id, prev).catch(() => {});
+    const m = await ctx.reply('✅ Чек получен и отправлен преподавателю. Как только оплата будет подтверждена, баланс обновится — я пришлю уведомление.', { reply_markup: nav(new InlineKeyboard(), 'm|bal') });
+    await store.setScreen(ctx.chat.id, m.message_id);
     await N.receiptToAdmins(r);
   });
 
@@ -556,10 +586,11 @@ export function createBot({ token, store, cfg, botInfo }) {
       const b = await applyStatus(id, map[action], ctx.from.id, 'bot');
       await ctx.answerCallbackQuery(STATUS[b.status]);
       const c = lessonCard(b);
-      await show(ctx, c.text, c.kb);
       if (b.status === 'done') {
         await store.setState(ctx.from.id, { type: 'hw', bookingId: id });
-        await ctx.reply('🎓 Отмечено. Ученику отправлено уведомление с балансом.\nНапишите тему и ДЗ (первая строка — тема) — или вернитесь назад.', { reply_markup: nav(new InlineKeyboard(), `adl|${id}`) });
+        await show(ctx, `${c.text}\n\n🎓 Отмечено, ученику отправлен остаток баланса.\n📚 Напишите сюда тему и ДЗ (первая строка — тема) или нажмите «Назад».`, c.kb);
+      } else {
+        await show(ctx, c.text, c.kb);
       }
     } catch (e) { await ctx.answerCallbackQuery(e.message); }
   });
@@ -568,13 +599,13 @@ export function createBot({ token, store, cfg, botInfo }) {
   admin.callbackQuery(/^rc\|ok\|(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const r = await store.getReceipt(Number(ctx.match[1]));
-    if (!r || r.status !== 'pending') return ctx.reply('Этот чек уже обработан.', { reply_markup: nav(new InlineKeyboard(), 'm|rcpts') });
+    if (!r || r.status !== 'pending') return show(ctx, 'Этот чек уже обработан.', nav(new InlineKeyboard(), 'm|rcpts'));
     const s = await store.getSettings();
     const price = store.priceOf(r, s);
     const kb = new InlineKeyboard();
     [1, 4, 8].forEach((n) => kb.text(`+${lessons(n)} (${money(n * price, s)})`, `rc|n|${r.id}|${n}`).row());
     kb.text('Другое количество', `rc|custom|${r.id}`);
-    await ctx.reply(`Сколько уроков зачислить ученику ${who(r)}?`, { parse_mode: 'HTML', reply_markup: nav(kb, 'm|rcpts') });
+    await show(ctx, `🧾 Чек от ${who(r)}\nСколько уроков зачислить?`, nav(kb, 'm|rcpts'));
   });
   admin.callbackQuery(/^rc\|n\|(\d+)\|(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -594,9 +625,9 @@ export function createBot({ token, store, cfg, botInfo }) {
     await ctx.answerCallbackQuery();
     try {
       const r = await store.rejectReceipt(Number(ctx.match[1]), ctx.from.id);
-      await ctx.reply(`❌ Чек от ${who(r)} отклонён.`, { parse_mode: 'HTML', reply_markup: nav(new InlineKeyboard(), 'm|rcpts') });
+      await show(ctx, `❌ Чек от ${who(r)} отклонён.`, nav(new InlineKeyboard(), 'm|rcpts'));
       await N.toUser(r, '⚠️ Преподаватель не смог подтвердить оплату по этому чеку. Пожалуйста, проверьте перевод или свяжитесь с преподавателем.');
-    } catch (e) { await ctx.reply(`⚠️ ${esc(e.message)}`, { reply_markup: nav(new InlineKeyboard(), 'm|rcpts') }); }
+    } catch (e) { await show(ctx, `⚠️ ${esc(e.message)}`, nav(new InlineKeyboard(), 'm|rcpts')); }
   });
 
   // карточка ученика
@@ -608,7 +639,7 @@ export function createBot({ token, store, cfg, botInfo }) {
     const next = (await store.userBookings(uid))[0];
     const text = `👤 <b>${esc(u.name)}</b>${u.username ? ` · @${esc(u.username)}` : ''}${u.tg_id ? '' : ' · 📒 без Telegram'}\n` +
       `Уровень: ${esc(u.level || '—')} · Цель: ${esc(u.goal || '—')}\n` +
-      (u.tg_id ? `🌍 ${tzLabel(u.tz || 'Europe/Moscow')}\n` : '') +
+      (u.tg_id ? `🌍 ${tzLabel(u.tz || 'Europe/Moscow')}\n` : `📒 Без Telegram${u.username ? ` · привяжется, когда @${esc(u.username)} откроет бота` : ''}\n`) +
       `Цена урока: ${money(store.priceOf(u, s), s)}${u.price ? ' (индивидуальная)' : ''}\n` +
       `Баланс: <b>${lessons(u.balance)}</b> · Проведено: ${hist.filter((b) => b.status === 'done').length}\n` +
       `Ближайший: ${next ? `${fmtDate(next.date)}, ${next.start}` : '—'}\n` +
@@ -616,7 +647,7 @@ export function createBot({ token, store, cfg, botInfo }) {
     const kb = new InlineKeyboard().text('💳 Оплата', `stu_pay|${uid}`).text('➕ Урок', `dl|ab|${uid}|0`).row()
       .text('📝 Заметка', `stu_note|${uid}`);
     if (u.tg_id) kb.text('✉️ Написать', `stu_msg|${uid}`).row().text('💳 Напомнить об оплате', `stu_remind|${uid}`).row();
-    else kb.text('🔗 Ссылка-приглашение', `stu_link|${uid}`).row();
+    else kb.text('🔗 Привязать Telegram', `stu_lnk|${uid}`).row();
     kb.text(u.blocked ? '✅ Разблокировать' : '🚫 Заблокировать', `stu_blk|${uid}`).text('🗑 Удалить', `stu_del|${uid}`);
     return show(ctx, text, nav(kb, 'm|students'));
   }
@@ -656,11 +687,51 @@ export function createBot({ token, store, cfg, botInfo }) {
     await store.log(ctx.from.id, 'payment.reminder', { user_id: u.id, manual: true });
     await ctx.answerCallbackQuery(ok ? 'Напоминание отправлено' : 'Не удалось отправить');
   });
+  // ---- привязка Telegram к карточке, добавленной вручную ----
+  admin.callbackQuery(/^stu_lnk\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const u = await store.getUser(Number(ctx.match[1]));
+    await show(ctx, `🔗 <b>Как подключить Telegram ученику ${esc(u.name)}</b>\n\n` +
+      `1️⃣ <b>По нику</b>${u.username ? ` (сейчас: @${esc(u.username)})` : ''} — укажите @username ученика. Когда он откроет бота по любой ссылке, карточка привяжется сама.\n\n` +
+      '2️⃣ <b>Он уже писал боту</b> — выберите его из списка, и две записи объединятся в одну (уроки, оплаты, баланс сохранятся).\n\n' +
+      '3️⃣ <b>Ссылка-приглашение</b> — отправьте ученику личную ссылку.',
+    nav(new InlineKeyboard().text('✍️ Указать @username', `stu_uname|${u.id}`).row()
+      .text('👥 Выбрать из тех, кто писал боту', `stu_cand|${u.id}`).row()
+      .text('🔗 Ссылка-приглашение', `stu_link|${u.id}`), `stu|${u.id}`));
+  });
+  admin.callbackQuery(/^stu_uname\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await store.setState(ctx.from.id, { type: 'stu_uname', uid: Number(ctx.match[1]) });
+    await show(ctx, 'Напишите ник ученика в Telegram, например <code>@ivan_petrov</code>', nav(new InlineKeyboard(), `stu_lnk|${ctx.match[1]}`));
+  });
+  admin.callbackQuery(/^stu_cand\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const cardId = Number(ctx.match[1]);
+    const list = (await store.tgCandidates()).filter((x) => !isAdmin(x.tg_id) && x.id !== cardId).slice(0, 20);
+    const kb = new InlineKeyboard();
+    list.forEach((x) => kb.text(`${x.name}${x.username ? ` @${x.username}` : ''}${x.registered ? '' : ' · не дорегистрировался'}`, `stu_mg|${cardId}|${x.id}`).row());
+    await show(ctx, list.length ? '👥 Кто из них — этот ученик? Записи объединятся в одну карточку.' : 'Пока никто, кроме уже привязанных, боту не писал.', nav(kb, `stu_lnk|${cardId}`));
+  });
+  admin.callbackQuery(/^stu_mg\|(\d+)\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const card = await store.getUser(Number(ctx.match[1]));
+    const other = await store.getUser(Number(ctx.match[2]));
+    await show(ctx, `Объединить <b>${esc(card.name)}</b> (без Telegram) и <b>${who(other)}</b>?\n\nОстанется одна карточка «${esc(card.name)}» с Telegram, уроками, оплатами и балансом обеих записей.`,
+      nav(new InlineKeyboard().text('✅ Да, объединить', `stu_mgok|${card.id}|${other.id}`), `stu_cand|${card.id}`));
+  });
+  admin.callbackQuery(/^stu_mgok\|(\d+)\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    try {
+      const u = await store.mergeTelegram(Number(ctx.match[1]), Number(ctx.match[2]), ctx.from.id, 'manual');
+      await N.toUser(u, `✅ Ваш Telegram подключён к карточке ученика у преподавателя.\n💳 Оплаченных уроков: <b>${u.balance}</b>`);
+      await studentCard(ctx, u.id);
+    } catch (e) { await show(ctx, `⚠️ ${esc(e.message)}`, nav(new InlineKeyboard(), `stu|${ctx.match[1]}`)); }
+  });
   admin.callbackQuery(/^stu_link\|(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const code = await store.ensureLinkCode(Number(ctx.match[1]));
     await show(ctx, `🔗 Ссылка-приглашение (по желанию — можно не отправлять):\nhttps://t.me/${ctx.me.username}?start=link_${code}\n\nЕсли ученик откроет её, его Telegram привяжется к этой карточке вместе с историей и балансом.`,
-      nav(new InlineKeyboard(), `stu|${ctx.match[1]}`));
+      nav(new InlineKeyboard(), `stu_lnk|${ctx.match[1]}`));
   });
   for (const [key, prompt] of [
     ['pay', 'Введите оплату: <code>сумма количество_уроков [комментарий]</code>\nНапример: <code>6000 4 пакет ноябрь</code>'],
@@ -713,7 +784,7 @@ export function createBot({ token, store, cfg, botInfo }) {
   admin.callbackQuery(/^exp\|(\w+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     const csv = await store.exportCsv(ctx.match[1]);
-    if (!csv) return ctx.reply('Пока нет данных.', { reply_markup: nav(new InlineKeyboard(), 'm|exp') });
+    if (!csv) return show(ctx, '📤 Пока нет данных для выгрузки.', nav(new InlineKeyboard(), 'm|exp'));
     await store.log(ctx.from.id, 'export', { kind: ctx.match[1] });
     await ctx.replyWithDocument(new InputFile(new TextEncoder().encode(csv), `${ctx.match[1]}_${store.T.now().date}.csv`), { reply_markup: nav(new InlineKeyboard(), 'm|exp') });
   });
@@ -744,8 +815,8 @@ export function createBot({ token, store, cfg, botInfo }) {
 
   bot.command('cancel', async (ctx) => {
     await clearTransient(ctx);
-    await ctx.reply('Ок, отменено.', { reply_markup: menuFor(ctx.from.id) });
     if (isAdmin(ctx.from.id) || ctx.u.registered) await homeScreen(ctx);
+    else await ctx.reply('Ок, отменено.');
   });
   bot.command('id', (ctx) => ctx.reply(`Ваш Telegram ID: <code>${ctx.from.id}</code>`, { parse_mode: 'HTML' }));
 
@@ -753,50 +824,60 @@ export function createBot({ token, store, cfg, botInfo }) {
   bot.on('message:text', async (ctx) => {
     const st = await store.getState(ctx.from.id);
     const text = ctx.message.text.trim();
-    if (!st?.type) return ctx.reply('Не понял 🙂 Выберите раздел:', { reply_markup: nav(new InlineKeyboard(), null) });
+    if (!st?.type) return show(ctx, 'Не понял 🙂 Выберите раздел:', nav(new InlineKeyboard(), null));
 
     if (st.type === 'reg_name') {
       await store.updateUser(ctx.u.id, { name: text.slice(0, 60) }, ctx.from.id);
       return askLevel(ctx);
     }
-    if (st.type === 'receipt') return ctx.reply('Пришлите, пожалуйста, именно скриншот или файл чека 📎', { reply_markup: nav(new InlineKeyboard(), 'm|bal') });
+    if (st.type === 'receipt') return show(ctx, 'Пришлите, пожалуйста, именно скриншот или файл чека 📎', nav(new InlineKeyboard(), 'm|bal'));
     if (!isAdmin(ctx.from.id)) return;
     await store.setState(ctx.from.id, null);
 
     if (st.type === 'hw') {
       const [topic, ...rest] = text.split('\n');
       const b = await store.updateBookingNotes(st.bookingId, { topic, homework: rest.join('\n').trim() || topic }, ctx.from.id);
-      await ctx.reply(b.tg_id ? '📚 Сохранено и отправлено ученику.' : '📚 Сохранено.', { reply_markup: nav(new InlineKeyboard(), `adl|${b.id}`) });
+      await show(ctx, b.tg_id ? '📚 Сохранено и отправлено ученику.' : '📚 Сохранено.', nav(new InlineKeyboard(), `adl|${b.id}`));
       return N.homework(b);
     }
     if (st.type === 'rc_custom') {
       const m = text.match(/^(\d+)(?:\s+(\d+))?$/);
-      if (!m) { await store.setState(ctx.from.id, st); return ctx.reply('Формат: <code>5</code> или <code>5 7000</code>', { parse_mode: 'HTML', reply_markup: nav(new InlineKeyboard(), 'm|rcpts') }); }
+      if (!m) { await store.setState(ctx.from.id, st); return show(ctx, 'Формат: <code>5</code> или <code>5 7000</code>', nav(new InlineKeyboard(), 'm|rcpts')); }
       try {
         const { user, amount } = await store.acceptReceipt(st.receiptId, Number(m[1]), m[2] ?? null, ctx.from.id);
         const s = await store.getSettings();
-        await ctx.reply(`✅ Зачислено: ${who(user)} +${lessons(Number(m[1]))} (${money(amount, s)}). Баланс: ${lessons(user.balance)}.`, { parse_mode: 'HTML', reply_markup: nav(new InlineKeyboard(), 'm|rcpts') });
+        await show(ctx, `✅ Зачислено: ${who(user)} +${lessons(Number(m[1]))} (${money(amount, s)}). Баланс: ${lessons(user.balance)}.`, nav(new InlineKeyboard(), 'm|rcpts'));
         return N.toUser(user, `✅ <b>Оплата подтверждена!</b> +${lessons(Number(m[1]))}.\n💳 Оплаченных уроков: <b>${user.balance}</b>. Спасибо!`);
-      } catch (e) { return ctx.reply(`⚠️ ${esc(e.message)}`, { reply_markup: nav(new InlineKeyboard(), 'm|rcpts') }); }
+      } catch (e) { return show(ctx, `⚠️ ${esc(e.message)}`, nav(new InlineKeyboard(), 'm|rcpts')); }
     }
     if (st.type === 'stu_pay') {
       const m = text.match(/^(\d+)\s+(-?\d+)\s*(.*)$/);
-      if (!m) { await store.setState(ctx.from.id, st); return ctx.reply('Формат: <code>6000 4 комментарий</code>', { parse_mode: 'HTML', reply_markup: nav(new InlineKeyboard(), `stu|${st.uid}`) }); }
+      if (!m) { await store.setState(ctx.from.id, st); return show(ctx, 'Формат: <code>6000 4 комментарий</code>', nav(new InlineKeyboard(), `stu|${st.uid}`)); }
       const u = await store.addPayment(st.uid, Number(m[1]), Number(m[2]), m[3], ctx.from.id);
       const s = await store.getSettings();
-      await ctx.reply(`💳 Оплата записана. Баланс ${esc(u.name)}: ${lessons(u.balance)}.`, { parse_mode: 'HTML', reply_markup: nav(new InlineKeyboard(), `stu|${st.uid}`) });
+      await show(ctx, `💳 Оплата записана. Баланс ${esc(u.name)}: ${lessons(u.balance)}.`, nav(new InlineKeyboard(), `stu|${st.uid}`));
       return N.toUser(u, `💳 Оплата получена: ${money(Number(m[1]), s)} (+${lessons(Number(m[2]))}). Оплаченных уроков: <b>${u.balance}</b>. Спасибо!`);
+    }
+    if (st.type === 'stu_uname') {
+      try {
+        const u = await store.updateUser(st.uid, { username: text }, ctx.from.id);
+        return show(ctx, `✅ Готово. Когда @${esc(u.username)} откроет бота, его Telegram привяжется к карточке «${esc(u.name)}», а вам придёт уведомление.\nСсылка на бота: https://t.me/${ctx.me.username}`,
+          nav(new InlineKeyboard(), `stu|${st.uid}`));
+      } catch (e) {
+        await store.setState(ctx.from.id, st);
+        return show(ctx, `⚠️ ${esc(e.message)}`, nav(new InlineKeyboard(), `stu_lnk|${st.uid}`));
+      }
     }
     if (st.type === 'stu_note') { await store.updateUser(st.uid, { notes: text }, ctx.from.id); return studentCard(ctx, st.uid); }
     if (st.type === 'stu_msg') {
       const u = await store.getUser(st.uid);
       await N.toUser(u, `✉️ <b>Сообщение от преподавателя</b>\n\n${esc(text)}`);
       await store.log(ctx.from.id, 'message.sent', { user_id: st.uid, text });
-      return ctx.reply('✉️ Отправлено.', { reply_markup: nav(new InlineKeyboard(), `stu|${st.uid}`) });
+      return show(ctx, '✉️ Отправлено.', nav(new InlineKeyboard(), `stu|${st.uid}`));
     }
     if (st.type === 'broadcast') {
       await store.setState(ctx.from.id, { type: 'broadcast_confirm', text });
-      return ctx.reply(`Отправить всем ученикам?\n\n${text}`, { reply_markup: nav(new InlineKeyboard().text('📢 Отправить', 'bc|send'), 'm|bc') });
+      return show(ctx, `Отправить всем ученикам?\n\n${text}`, nav(new InlineKeyboard().text('📢 Отправить', 'bc|send'), 'm|bc'));
     }
   });
 
