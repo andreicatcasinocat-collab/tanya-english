@@ -188,6 +188,7 @@ export function startWeb({ notifyUser, notifyAdmins, sendFile }) {
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
     if (!['GET', 'POST'].includes(req.method)) return send(res, 405, { error: 'Method not allowed' });
     try {
+      if (url.pathname === '/api/health') return send(res, 200, { ok: true });
       if (url.pathname.startsWith('/api/')) {
         const user = authUser(req, url);
         if (!user) {

@@ -15,12 +15,13 @@ if (!config.botToken && !config.devMode) {
  * (скрывает IP и поглощает DDoS). При падении туннель перезапускается.
  */
 function startTunnel(onUrl) {
+  let current = null; // { proc, url }
   const run = () => {
     const p = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${config.port}`], { stdio: ['ignore', 'pipe', 'pipe'] });
     let found = false;
     const scan = (buf) => {
       const m = !found && String(buf).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-      if (m) { found = true; onUrl(m[0]); }
+      if (m) { found = true; current = { proc: p, url: m[0], fails: 0 }; onUrl(m[0]); }
     };
     p.stdout.on('data', scan);
     p.stderr.on('data', scan);
@@ -32,6 +33,32 @@ function startTunnel(onUrl) {
     process.once('exit', () => p.kill());
   };
   run();
+
+  // Сторож: после сна ноутбука туннель часто «зависает» — процесс жив, но трафик не идёт.
+  // Проверяем доступность снаружи и при сбоях перезапускаем туннель (адрес обновится в кнопке меню).
+  const restart = (why) => {
+    if (!current) return;
+    console.error(`⚠️ Перезапуск туннеля: ${why}`);
+    log(null, 'system.tunnel_watchdog', { why, url: current.url });
+    const { proc } = current;
+    current = null;
+    proc.kill();
+  };
+  let lastTick = Date.now();
+  setInterval(async () => {
+    const now = Date.now();
+    const slept = now - lastTick > 90_000;
+    lastTick = now;
+    if (!current) return;
+    if (slept) return restart('компьютер выходил из сна');
+    try {
+      const r = await fetch(`${current.url}/api/health`, { signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      current.fails = 0;
+    } catch (e) {
+      if (++current.fails >= 3) restart(`недоступен (${e.message})`);
+    }
+  }, 30_000).unref();
 }
 
 if (config.botToken) {
