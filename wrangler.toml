@@ -1,0 +1,28 @@
+# Cloudflare Workers: бот (webhook), API, сайт и напоминания
+name = "tanya-english"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[assets]
+directory = "./webapp"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tanya-english"
+database_id = "REPLACE_AFTER_CREATE"
+migrations_dir = "migrations"
+
+# Напоминания ученикам — каждую минуту
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+TZ_NAME = "Asia/Ho_Chi_Minh"
+ADMIN_IDS = "344375075"
+
+# Секреты (задаются командой `npx wrangler secret put ИМЯ`, в репозиторий не попадают):
+#   BOT_TOKEN       — токен бота от @BotFather
+#   WEBHOOK_SECRET  — случайная строка для защиты webhook
+#   ADMIN_CODE      — код для /admin

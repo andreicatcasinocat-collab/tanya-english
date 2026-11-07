@@ -72,7 +72,7 @@ export function createNotifier(api, store) {
       if (kind === 'rem24' && u.n_24h) {
         const hw = await store.lastHomework(u.id);
         await N.toUser(u,
-          `⏰ <b>Завтра урок английского</b> — ${when}\n\n` +
+          `⏰ <b>${b.date === store.T.now().date ? 'Сегодня' : 'Завтра'} урок английского</b> — ${when}\n\n` +
           (hw ? `📚 Не забудьте сделать домашнее задание:\n${esc(hw.homework)}\n\n` : '📚 Не забудьте сделать домашнее задание, если оно было.\n\n') +
           'Если планы изменились — перенести или отменить урок можно в «📋 Мои уроки».');
       }

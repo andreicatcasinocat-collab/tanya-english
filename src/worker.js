@@ -26,8 +26,10 @@ async function getApp(env, origin) {
   };
   const store = createStore(d1(env.DB), cfg);
   await store.init();
-  const { bot, N, applyStatus, runReminders, setupCommands } = createBot({ token: env.BOT_TOKEN, store, cfg });
-  await bot.init();
+  // BOT_INFO (JSON) — только для локальных тестов без настоящего токена
+  const botInfo = env.BOT_INFO ? JSON.parse(env.BOT_INFO) : undefined;
+  const { bot, N, applyStatus, runReminders, setupCommands } = createBot({ token: env.BOT_TOKEN, store, cfg, botInfo });
+  if (!botInfo) await bot.init();
   const handleApi = createApi({ store, cfg, bot, N, applyStatus });
   const onUpdate = webhookCallback(bot, 'cloudflare-mod', { secretToken: env.WEBHOOK_SECRET });
   app = { cfg, store, bot, handleApi, onUpdate, runReminders, setupCommands };
@@ -38,17 +40,24 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const ip = req.headers.get('cf-connecting-ip') || '?';
-    const a = await getApp(env, url.origin);
+    if (url.pathname === '/api/health') return Response.json({ ok: true });
+    if (!url.pathname.startsWith('/api/') && url.pathname !== '/tg' && url.pathname !== '/setup') return env.ASSETS.fetch(req);
+    // Webhook и настройка — отклоняем без секрета ещё до какой-либо работы
+    const secretOk = (h) => !!env.WEBHOOK_SECRET && req.headers.get(h) === env.WEBHOOK_SECRET;
+    if (url.pathname === '/tg' && (req.method !== 'POST' || !secretOk('x-telegram-bot-api-secret-token'))) return new Response('forbidden', { status: 403 });
+    if (url.pathname === '/setup' && (req.method !== 'POST' || !secretOk('x-setup-key'))) return new Response('forbidden', { status: 403 });
+    let a;
+    try { a = await getApp(env, url.origin); } catch (e) {
+      console.error('init failed', e.message);
+      return Response.json({ error: 'Сервис временно недоступен' }, { status: 503 });
+    }
+    if (!a.cfg.webAppUrl) a.cfg.webAppUrl = env.WEBAPP_URL || url.origin;
     await a.store.loadAdmins();
 
     // Webhook Telegram: принимаем только с секретным заголовком
-    if (url.pathname === '/tg' && req.method === 'POST') {
-      if (req.headers.get('x-telegram-bot-api-secret-token') !== env.WEBHOOK_SECRET) return new Response('forbidden', { status: 403 });
-      return a.onUpdate(req);
-    }
+    if (url.pathname === '/tg') return a.onUpdate(req);
     // Одноразовая настройка: регистрирует webhook и кнопку «Сайт». Защищено секретом.
-    if (url.pathname === '/setup' && req.method === 'POST') {
-      if (req.headers.get('x-setup-key') !== env.WEBHOOK_SECRET) return new Response('forbidden', { status: 403 });
+    if (url.pathname === '/setup') {
       await a.bot.api.setWebhook(`${url.origin}/tg`, {
         secret_token: env.WEBHOOK_SECRET, drop_pending_updates: false, allowed_updates: ['message', 'callback_query'],
       });
@@ -57,8 +66,7 @@ export default {
       await a.store.log(null, 'system.setup', { webhook: `${url.origin}/tg` });
       return Response.json({ ok: true, webhook: `${url.origin}/tg`, site: a.cfg.webAppUrl });
     }
-    if (url.pathname.startsWith('/api/')) return a.handleApi(req, ip);
-    return env.ASSETS.fetch(req);
+    return a.handleApi(req, ip);
   },
 
   // Каждую минуту: напоминания ученикам
