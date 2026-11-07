@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node --no-warnings src/index.js",
-    "dev": "DEV_MODE=1 node --no-warnings src/index.js",
-    "demo": "rm -f data/demo.db* && DB_PATH=data/demo.db ADMIN_IDS=1 node --no-warnings scripts/seed-demo.js && DB_PATH=data/demo.db ADMIN_IDS=1 BOT_TOKEN= DEV_MODE=1 node --no-warnings src/index.js"
+    "start": "node --no-warnings src/node.js",
+    "dev": "DEV_MODE=1 node --no-warnings src/node.js",
+    "deploy": "wrangler deploy",
+    "migrate-v1": "node --no-warnings scripts/migrate-v1.js"
   },
   "keywords": [],
   "author": "",
