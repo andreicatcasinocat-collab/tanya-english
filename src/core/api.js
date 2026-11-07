@@ -1,5 +1,5 @@
 // API мини-приложения на стандартных Request/Response (работает в Node и Cloudflare Workers).
-import { isDate, isTime } from './time.js';
+import { isDate, isTime, isValidTz, TIMEZONES, tzLabel, fmtDate } from './time.js';
 import { lessons, money } from './notify.js';
 import { NOTIFY_TYPES } from './notify.js';
 
@@ -72,7 +72,18 @@ export function createApi({ store, cfg, bot, N, applyStatus }) {
     // ----- ученик / общие -----
     'GET /api/me': async ({ u, tgId }) => {
       const s = await store.getSettings();
-      return { user: u, admin: store.isAdmin(tgId), today: T.now(), settings: publicSettings(s), tz: cfg.tz, price: store.priceOf(u, s) };
+      const admin = store.isAdmin(tgId);
+      const tz = admin ? cfg.tz : (u.tz || 'Europe/Moscow');
+      return {
+        user: u, admin, settings: publicSettings(s), price: store.priceOf(u, s),
+        tz, teacher_tz: cfg.tz, today: store.nowIn(tz), now: Date.now(),
+        timezones: TIMEZONES.map(([z, n]) => [z, n, tzLabel(z)]),
+      };
+    },
+    'POST /api/tz': async ({ u, tgId, body }) => {
+      need(isValidTz(body.tz), 'Неизвестный часовой пояс');
+      await store.updateUser(u.id, { tz: body.tz }, tgId);
+      return { tz: body.tz, label: tzLabel(body.tz) };
     },
     'GET /api/month': async ({ q }) => {
       const [from, to] = range(q);
@@ -82,9 +93,10 @@ export function createApi({ store, cfg, bot, N, applyStatus }) {
     'GET /api/my': async ({ u }) => {
       const s = await store.getSettings();
       const fresh = await store.getUser(u.id);
+      const withAt = (list) => list.map((b) => ({ ...b, at: store.atUtc(b.date, b.start) }));
       return {
-        upcoming: await store.userBookings(u.id),
-        history: await store.userBookings(u.id, { upcoming: false }),
+        upcoming: withAt(await store.userBookings(u.id)),
+        history: withAt(await store.userBookings(u.id, { upcoming: false })),
         payments: await store.userPayments(u.id),
         receipts: (await store.userReceipts(u.id)).map(({ file_id, ...r }) => r),
         balance: fresh.balance, price: store.priceOf(fresh, s),
@@ -96,12 +108,13 @@ export function createApi({ store, cfg, bot, N, applyStatus }) {
       need(u.registered, 'Сначала зарегистрируйтесь в боте: /start');
       need(isDate(body.date) && isTime(body.start));
       const b = await store.createBooking({ userId: u.id, date: body.date, start: body.start });
-      await N.toAdmins(`${b.status === 'pending' ? '📥 Новая заявка' : '📌 Новая запись'} (сайт): <b>${b.name}</b>\n${b.date}, ${b.start}–${b.end}`);
+      const local = store.tzOf(u) !== cfg.tz ? `\n🌍 У ученика: ${N.when(u, b.date, b.start, { tz: 'always' })}` : '';
+      await N.toAdmins(`${b.status === 'pending' ? '📥 Новая заявка' : '📌 Новая запись'} (сайт): <b>${b.name}</b>\n${fmtDate(b.date)}, ${b.start}–${b.end}${local}`);
       return b;
     },
     'POST /api/cancel': async ({ tgId, body }) => {
       const { booking: b, late } = await store.cancelByStudent(Number(body.id), tgId);
-      await N.toAdmins(`❌ ${b.name} отменил урок ${b.date}, ${b.start}${late ? ' — <b>поздняя отмена</b>' : ''}`);
+      await N.toAdmins(`❌ ${b.name} отменил урок ${fmtDate(b.date)}, ${b.start}${late ? ' — <b>поздняя отмена</b>' : ''}`);
       return { booking: b, late };
     },
     'POST /api/notify': async ({ u, tgId, body }) => {
@@ -184,14 +197,15 @@ export function createApi({ store, cfg, bot, N, applyStatus }) {
     'POST /api/admin/book': async ({ tgId, body }) => {
       need(isDate(body.date) && isTime(body.start));
       const b = await store.createBooking({ userId: Number(body.user_id), date: body.date, start: body.start, actorTgId: tgId, force: true });
-      await N.toUser(b, `📌 Преподаватель записал вас на урок: <b>${b.date}, ${b.start}</b>`);
+      await N.toUser(b, `📌 Преподаватель записал вас на урок: <b>${N.when(await store.getUser(b.user_id), b.date, b.start)}</b>`);
       return b;
     },
     'POST /api/admin/reschedule': async ({ tgId, body }) => {
       need(isDate(body.date) && isTime(body.start));
       const old = await store.getBooking(Number(body.id));
       const b = await store.rescheduleBooking(old.id, body.date, body.start, tgId);
-      await N.toUser(b, `🔁 Урок перенесён: ${old.date} ${old.start} → <b>${b.date} ${b.start}</b>`);
+      const su = await store.getUser(b.user_id);
+      await N.toUser(b, `🔁 Урок перенесён: ${N.when(su, old.date, old.start)} → <b>${N.when(su, b.date, b.start)}</b>`);
       return b;
     },
     'POST /api/admin/day': async ({ tgId, body }) => {

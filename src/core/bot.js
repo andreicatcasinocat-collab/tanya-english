@@ -1,5 +1,5 @@
 import { Bot, InlineKeyboard, Keyboard, InputFile } from 'grammy';
-import { fmtDate, addDays } from './time.js';
+import { fmtDate, addDays, TIMEZONES, tzLabel, tzShort } from './time.js';
 import { createNotifier, esc, who, lessons, money, NOTIFY_TYPES } from './notify.js';
 
 export const STATUS = {
@@ -107,30 +107,49 @@ export function createBot({ token, store, cfg, botInfo }) {
     GOALS.forEach((g, i) => { kb.text(g, `reg|goal|${i}`); if (i % 2) kb.row(); });
     await ctx.editMessageText(`Уровень: <b>${ctx.match[1]}</b>\n\nКакая главная цель?`, { parse_mode: 'HTML', reply_markup: kb });
   });
+  const tzKeyboard = (prefix) => {
+    const kb = new InlineKeyboard();
+    TIMEZONES.forEach(([, name], i) => { kb.text(name, `${prefix}|${i}`); if (i % 3 === 2) kb.row(); });
+    return kb;
+  };
   bot.callbackQuery(/^reg\|goal\|(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
+    await store.updateUser(ctx.u.id, { goal: GOALS[Number(ctx.match[1])] }, ctx.from.id);
+    const kb = new InlineKeyboard().text('🇷🇺 Москва (UTC+3)', `tzr|${TIMEZONES.findIndex(([z]) => z === 'Europe/Moscow')}`).row().text('Другой часовой пояс…', 'tzr|list');
+    await ctx.editMessageText(`Цель: <b>${esc(GOALS[Number(ctx.match[1])])}</b> ✅\n\n🌍 В каком часовом поясе вы живёте? Время уроков буду показывать по нему.`, { parse_mode: 'HTML', reply_markup: kb });
+  });
+  bot.callbackQuery('tzr|list', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup({ reply_markup: tzKeyboard('tzr') });
+  });
+  bot.callbackQuery(/^tzr\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const tz = TIMEZONES[Number(ctx.match[1])]?.[0] || 'Europe/Moscow';
     await store.setState(ctx.from.id, null);
-    const u = await store.updateUser(ctx.u.id, { goal: GOALS[Number(ctx.match[1])], registered: 1 }, ctx.from.id);
+    const u = await store.updateUser(ctx.u.id, { tz, registered: 1 }, ctx.from.id);
     await store.log(ctx.from.id, 'user.registered', { user_id: u.id, name: u.name, level: u.level, goal: u.goal });
-    await ctx.editMessageText(`Цель: <b>${esc(u.goal)}</b> ✅`, { parse_mode: 'HTML' });
+    await ctx.editMessageText(`🌍 Часовой пояс: <b>${tzLabel(tz)}</b> ✅`, { parse_mode: 'HTML' });
     await ctx.reply('Готово! Теперь можно записаться на урок 👇\n\n🔔 Я буду напоминать об уроках за сутки, за 2 часа и за 15 минут. Настроить — кнопка «🔔 Уведомления».', { reply_markup: studentMenu() });
-    await N.toAdmins(`🆕 Новый ученик: ${who(u)}\nУровень: ${esc(u.level)} · Цель: ${esc(u.goal)}`,
+    await N.toAdmins(`🆕 Новый ученик: ${who(u)}\nУровень: ${esc(u.level)} · Цель: ${esc(u.goal)}\n🌍 ${tzLabel(u.tz)}`,
       { reply_markup: new InlineKeyboard().text('Открыть карточку', `stu|${u.id}`) });
   });
 
   // ---------- выбор даты/времени ----------
   // mode: bk — ученик записывается; ab — админ записывает ученика (arg = user.id); rs — перенос (arg = booking.id)
+  /** Дни и слоты показываются в часовом поясе того, кто смотрит (ученик — свой, преподаватель — свой). */
   async function showDays(ctx, mode, arg, offset = 0, edit = false) {
     const s = await store.getSettings();
-    const today = store.T.now().date;
+    const tz = store.tzOf(ctx.u);
+    const today = store.nowIn(tz).date;
     const span = Number(s.days_ahead);
-    const range = await store.slotsRange(today, addDays(today, span));
+    const tToday = store.T.now().date;
+    const byDay = await store.freeByViewerDate(tz, addDays(tToday, -1), addDays(tToday, span + 1));
     const kb = new InlineKeyboard();
     let shown = 0;
     let i = offset;
     for (; i <= span && shown < 8; i++) {
       const d = addDays(today, i);
-      const free = range[d].free;
+      const free = byDay[d]?.length || 0;
       if (!free) continue;
       kb.text(`${fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })} · ${free}`, `d|${mode}|${arg}|${d}`);
       if (++shown % 2 === 0) kb.row();
@@ -138,18 +157,22 @@ export function createBot({ token, store, cfg, botInfo }) {
     if (shown % 2) kb.row();
     if (offset > 0) kb.text('◀️ Раньше', `dl|${mode}|${arg}|${Math.max(0, offset - 8)}`);
     if (i <= span) kb.text('Дальше ▶️', `dl|${mode}|${arg}|${i}`);
-    const text = shown ? 'Выберите день (цифра — сколько свободных окон):' : 'Свободных окон пока нет 😔 Напишите преподавателю — постараемся найти время.';
+    const tzNote = tz !== store.cfg.tz ? `\n🌍 Время указано по вашему поясу: ${tzLabel(tz)}` : '';
+    const text = shown ? `Выберите день (цифра — сколько свободных окон):${tzNote}` : 'Свободных окон пока нет 😔 Напишите преподавателю — постараемся найти время.';
     return edit ? ctx.editMessageText(text, { reply_markup: kb }) : ctx.reply(text, { reply_markup: kb });
   }
   bot.callbackQuery(/^dl\|(\w+)\|(\d+)\|(\d+)$/, async (ctx) => { await ctx.answerCallbackQuery(); await showDays(ctx, ctx.match[1], ctx.match[2], Number(ctx.match[3]), true); });
   bot.callbackQuery(/^d\|(\w+)\|(\d+)\|([\d-]+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const [, mode, arg, date] = ctx.match;
-    const slots = (await store.slotsFor(date)).filter((x) => x.free);
+    const [, mode, arg, date] = ctx.match; // date — дата в поясе зрителя
+    const tz = store.tzOf(ctx.u);
+    const byDay = await store.freeByViewerDate(tz, addDays(date, -1), addDays(date, 1));
+    const slots = byDay[date] || [];
     const kb = new InlineKeyboard();
-    slots.forEach((sl, i) => { kb.text(sl.start, `t|${mode}|${arg}|${date}|${hm(sl.start)}`); if (i % 4 === 3) kb.row(); });
+    // в кнопке — время зрителя, в данных — время преподавателя (так хранится в базе)
+    slots.forEach((sl, i) => { kb.text(sl.vtime, `t|${mode}|${arg}|${sl.date}|${hm(sl.start)}`); if (i % 4 === 3) kb.row(); });
     kb.row().text('◀️ К датам', `dl|${mode}|${arg}|0`);
-    await ctx.editMessageText(slots.length ? `${fmtDate(date)} — выберите время:` : 'На этот день окон уже нет.', { reply_markup: kb });
+    await ctx.editMessageText(slots.length ? `${fmtDate(date)} — выберите время${tz !== store.cfg.tz ? ` (${tzShort(tz)})` : ''}:` : 'На этот день окон уже нет.', { reply_markup: kb });
   });
   bot.callbackQuery(/^t\|(\w+)\|(\d+)\|([\d-]+)\|(\d{4})$/, async (ctx) => {
     await ctx.answerCallbackQuery();
@@ -159,24 +182,25 @@ export function createBot({ token, store, cfg, botInfo }) {
       if (mode === 'bk') {
         const s = await store.getSettings();
         return ctx.editMessageText(
-          `Записаться на <b>${fmtDate(date)}, ${start}</b>?\nДлительность: ${s.lesson_duration} мин · ${money(store.priceOf(ctx.u, s), s)}`,
-          { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('✅ Записаться', `ok|${date}|${t}`).text('◀️ Назад', `d|bk|0|${date}`) },
+          `Записаться на <b>${N.when(ctx.u, date, start)}</b>?\nДлительность: ${s.lesson_duration} мин · ${money(store.priceOf(ctx.u, s), s)}`,
+          { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('✅ Записаться', `ok|${date}|${t}`).text('◀️ Назад', `d|bk|0|${store.toTz(date, start, store.tzOf(ctx.u)).date}`) },
         );
       }
       if (mode === 'ab') {
         if (!isAdmin(ctx.from.id)) return;
         const b = await store.createBooking({ userId: Number(arg), date, start, actorTgId: ctx.from.id, force: true });
         await ctx.editMessageText(`✅ Урок добавлен: ${esc(b.name)}, ${fmtDate(date)} ${start}`, { parse_mode: 'HTML' });
-        return N.toUser(b, `📌 Преподаватель записал вас на урок: <b>${fmtDate(date)}, ${start}</b>`);
+        return N.toUser(b, `📌 Преподаватель записал вас на урок: <b>${N.when(b, date, start)}</b>`);
       }
       if (mode === 'rs') {
         const old = await store.getBooking(Number(arg));
         if (!old || (old.tg_id !== ctx.from.id && !isAdmin(ctx.from.id))) return;
         const b = await store.rescheduleBooking(old.id, date, start, ctx.from.id);
-        const line = `${fmtDate(old.date)} ${old.start} → <b>${fmtDate(date)} ${start}</b>`;
-        await ctx.editMessageText(`🔁 Урок перенесён: ${line}`, { parse_mode: 'HTML' });
-        if (isAdmin(ctx.from.id)) await N.toUser(b, `🔁 Преподаватель перенёс урок: ${line}`);
-        else await N.toAdmins(`🔁 ${who(b)} перенёс урок: ${line}`);
+        const lineFor = (u) => `${N.when(u, old.date, old.start)} → <b>${N.when(u, date, start)}</b>`;
+        const student = await store.getUser(b.user_id);
+        await ctx.editMessageText(`🔁 Урок перенесён: ${lineFor(ctx.u)}`, { parse_mode: 'HTML' });
+        if (isAdmin(ctx.from.id)) await N.toUser(student, `🔁 Преподаватель перенёс урок: ${lineFor(student)}`);
+        else await N.toAdmins(`🔁 ${who(b)} перенёс урок: ${fmtDate(old.date)} ${old.start} → <b>${fmtDate(date)} ${start}</b>`);
       }
     } catch (e) {
       await ctx.editMessageText(`⚠️ ${e.message}`, { reply_markup: new InlineKeyboard().text('Выбрать другое время', `dl|${mode}|${arg}|0`) });
@@ -188,11 +212,13 @@ export function createBot({ token, store, cfg, botInfo }) {
     try {
       const b = await store.createBooking({ userId: ctx.u.id, date: ctx.match[1], start: unhm(ctx.match[2]) });
       await ctx.editMessageText(
-        `${b.status === 'confirmed' ? '✅ Вы записаны' : '⏳ Заявка отправлена'}: <b>${fmtDate(b.date)}, ${b.start}–${b.end}</b>` +
+        `${b.status === 'confirmed' ? '✅ Вы записаны' : '⏳ Заявка отправлена'}: <b>${N.when(ctx.u, b.date, b.start)}</b>` +
         (b.status === 'pending' ? '\nПреподаватель подтвердит её в ближайшее время.' : ''), { parse_mode: 'HTML' });
       const kb = new InlineKeyboard();
       if (b.status === 'pending') kb.text('✅ Подтвердить', `adm|confirm|${b.id}`).text('❌ Отклонить', `adm|reject|${b.id}`);
-      await N.toAdmins(`${b.status === 'pending' ? '📥 Новая заявка' : '📌 Новая запись'}: ${who(ctx.u)}\n<b>${fmtDate(b.date)}, ${b.start}–${b.end}</b>\nБаланс ученика: ${lessons(ctx.u.balance)}`, { reply_markup: kb });
+      const vtz = store.tzOf(ctx.u);
+      const local = vtz !== store.cfg.tz ? `\n🌍 У ученика: ${N.when(ctx.u, b.date, b.start, { tz: 'always' })}` : '';
+      await N.toAdmins(`${b.status === 'pending' ? '📥 Новая заявка' : '📌 Новая запись'}: ${who(ctx.u)}\n<b>${fmtDate(b.date)}, ${b.start}–${b.end}</b>${local}\nБаланс ученика: ${lessons(ctx.u.balance)}`, { reply_markup: kb });
     } catch (e) {
       await ctx.editMessageText(`⚠️ ${e.message}`, { reply_markup: new InlineKeyboard().text('Выбрать другое время', 'dl|bk|0|0') });
     }
@@ -206,7 +232,7 @@ export function createBot({ token, store, cfg, botInfo }) {
     const list = await store.userBookings(ctx.u.id);
     if (!list.length) return ctx.reply('У вас нет запланированных уроков.', { reply_markup: new InlineKeyboard().text('📅 Записаться', 'dl|bk|0|0') });
     for (const b of list) {
-      await ctx.reply(`<b>${fmtDate(b.date)}, ${b.start}–${b.end}</b>\n${STATUS[b.status]}`, {
+      await ctx.reply(`<b>${N.when(ctx.u, b.date, b.start)}</b>\n${STATUS[b.status]}`, {
         parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('🔁 Перенести', `rsq|${b.id}`).text('❌ Отменить', `cnq|${b.id}`),
       });
     }
@@ -227,14 +253,14 @@ export function createBot({ token, store, cfg, botInfo }) {
     if (!b || b.tg_id !== ctx.from.id) return;
     const s = await store.getSettings();
     const late = b.status === 'confirmed' && store.T.minutesUntil(b.date, b.start) < Number(s.cancel_hours) * 60;
-    await ctx.editMessageText(`Отменить урок ${fmtDate(b.date)}, ${b.start}?` + (late ? `\n\n⚠️ До урока меньше ${s.cancel_hours} ч — урок будет списан с баланса.` : ''),
+    await ctx.editMessageText(`Отменить урок ${N.when(ctx.u, b.date, b.start)}?` + (late ? `\n\n⚠️ До урока меньше ${s.cancel_hours} ч — урок будет списан с баланса.` : ''),
       { reply_markup: new InlineKeyboard().text('Да, отменить', `cn|${b.id}`).text('Нет', 'noop') });
   });
   bot.callbackQuery(/^cn\|(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     try {
       const { booking: b, late } = await store.cancelByStudent(Number(ctx.match[1]), ctx.from.id);
-      await ctx.editMessageText(`❌ Урок ${fmtDate(b.date)}, ${b.start} отменён${late ? ' (поздняя отмена, урок списан)' : ''}.`);
+      await ctx.editMessageText(`❌ Урок ${N.when(ctx.u, b.date, b.start)} отменён${late ? ' (поздняя отмена, урок списан)' : ''}.`);
       await N.toAdmins(`❌ ${who(b)} отменил урок ${fmtDate(b.date)}, ${b.start}${late ? ' — <b>поздняя отмена</b>' : ''}`);
     } catch (e) { await ctx.editMessageText(`⚠️ ${e.message}`); }
   });
@@ -279,6 +305,7 @@ export function createBot({ token, store, cfg, botInfo }) {
   const notifyKb = (u) => {
     const kb = new InlineKeyboard();
     for (const [key, title] of NOTIFY_TYPES) kb.text(`${u[key] ? '✅' : '🔕'} ${title}`, `nt|${key}`).row();
+    kb.text(`🌍 Часовой пояс: ${tzLabel(u.tz || 'Europe/Moscow')}`, 'tzm|list');
     return kb;
   };
   const notifyText = () => '🔔 <b>Уведомления</b>\n\nНажмите, чтобы включить или выключить:\n' +
@@ -293,10 +320,22 @@ export function createBot({ token, store, cfg, botInfo }) {
     await ctx.editMessageReplyMarkup({ reply_markup: notifyKb(u) }).catch(() => {});
   });
 
+  bot.callbackQuery('tzm|list', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply('🌍 Выберите ваш часовой пояс — время уроков будет показываться по нему:', { reply_markup: tzKeyboard('tzm') });
+  });
+  bot.callbackQuery(/^tzm\|(\d+)$/, async (ctx) => {
+    const tz = TIMEZONES[Number(ctx.match[1])]?.[0];
+    if (!tz) return ctx.answerCallbackQuery();
+    await store.updateUser(ctx.u.id, { tz }, ctx.from.id);
+    await ctx.answerCallbackQuery('Сохранено');
+    await ctx.editMessageText(`🌍 Часовой пояс: <b>${tzLabel(tz)}</b> ✅\nТеперь время уроков показывается по нему.`, { parse_mode: 'HTML' });
+  });
+
   bot.hears('📚 Домашка', async (ctx) => {
     const hw = (await store.userBookings(ctx.u.id, { upcoming: false })).filter((b) => b.homework).slice(0, 5);
     if (!hw.length) return ctx.reply('Домашних заданий пока нет 🎉');
-    await ctx.reply(hw.map((b) => `📚 <b>${fmtDate(b.date)}</b>${b.topic ? ` · ${esc(b.topic)}` : ''}\n${esc(b.homework)}`).join('\n\n'), { parse_mode: 'HTML' });
+    await ctx.reply(hw.map((b) => `📚 <b>${N.whenDate(ctx.u, b.date, b.start)}</b>${b.topic ? ` · ${esc(b.topic)}` : ''}\n${esc(b.homework)}`).join('\n\n'), { parse_mode: 'HTML' });
   });
   bot.hears('ℹ️ Правила', async (ctx) => {
     const s = await store.getSettings();
@@ -323,10 +362,12 @@ export function createBot({ token, store, cfg, botInfo }) {
   /** Общие действия над уроком (используются и в боте, и в мини-приложении). */
   async function applyStatus(id, status, actorTgId, via) {
     const b = await store.setBookingStatus(id, status, actorTgId, { by: 'teacher', via });
+    const su = await store.getUser(b.user_id);
+    const w = N.when(su, b.date, b.start);
     const msg = {
-      confirmed: `✅ Урок подтверждён: <b>${fmtDate(b.date)}, ${b.start}</b>. До встречи!`,
-      rejected: `😔 К сожалению, время ${fmtDate(b.date)}, ${b.start} не подошло. Выберите другое: /book`,
-      cancelled: `❌ Преподаватель отменил урок ${fmtDate(b.date)}, ${b.start}. Выберите другое время: /book`,
+      confirmed: `✅ Урок подтверждён: <b>${w}</b>. До встречи!`,
+      rejected: `😔 К сожалению, время ${w} не подошло. Выберите другое: /book`,
+      cancelled: `❌ Преподаватель отменил урок ${w}. Выберите другое время: /book`,
     }[b.status];
     if (msg) await N.toUser(b, msg);
     if (b.status === 'done') await N.lessonDone(b);
@@ -433,6 +474,7 @@ export function createBot({ token, store, cfg, botInfo }) {
     const next = (await store.userBookings(uid))[0];
     const text = `👤 <b>${esc(u.name)}</b>${u.username ? ` · @${esc(u.username)}` : ''}${u.tg_id ? '' : ' · 📒 без Telegram'}\n` +
       `Уровень: ${esc(u.level || '—')} · Цель: ${esc(u.goal || '—')}\n` +
+      (u.tg_id ? `🌍 ${tzLabel(u.tz || 'Europe/Moscow')}\n` : '') +
       `Цена урока: ${money(store.priceOf(u, s), s)}${u.price ? ' (индивидуальная)' : ''}\n` +
       `Баланс: <b>${lessons(u.balance)}</b> · Проведено: ${hist.filter((b) => b.status === 'done').length}\n` +
       `Ближайший: ${next ? `${fmtDate(next.date)}, ${next.start}` : '—'}\n` +

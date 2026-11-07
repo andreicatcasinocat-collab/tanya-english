@@ -1,6 +1,6 @@
 // Все сообщения, которые бот отправляет ученикам и преподавателю.
 import { InlineKeyboard } from 'grammy';
-import { fmtDate } from './time.js';
+import { fmtDate, tzShort } from './time.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 export const who = (u) => `${esc(u.name)}${u.username ? ` (@${esc(u.username)})` : ''}`;
@@ -23,6 +23,13 @@ export const NOTIFY_TYPES = [
 
 export function createNotifier(api, store) {
   const N = {
+    /** Дата и время урока так, как их видит человек: в его часовом поясе. */
+    when(u, date, time, { tz = true, opts } = {}) {
+      const vtz = store.tzOf(u);
+      const v = store.toTz(date, time, vtz);
+      return `${fmtDate(v.date, opts)}, ${v.time}${tz && vtz !== store.cfg.tz || tz === 'always' ? ` (${tzShort(vtz)})` : ''}`;
+    },
+    whenDate(u, date, time) { return fmtDate(store.toTz(date, time, store.tzOf(u)).date); },
     async toUser(u, text, extra = {}) {
       if (!u?.tg_id) return false; // ученик без Telegram — сообщения не отправляются
       try { await api.sendMessage(u.tg_id, text, { parse_mode: 'HTML', ...extra }); return true; } catch (e) { console.error('notify user', e.message); return false; }
@@ -53,7 +60,7 @@ export function createNotifier(api, store) {
       if (!u?.tg_id) return;
       if (u.n_done) {
         await N.toUser(u,
-          `✅ <b>Урок ${fmtDate(b.date)} проведён!</b> Спасибо за занятие.\n` +
+          `✅ <b>Урок ${N.whenDate(u, b.date, b.start)} проведён!</b> Спасибо за занятие.\n` +
           '📚 Домашнее задание пришлю в ближайшее время.\n\n' +
           `💳 Оплаченных уроков осталось: <b>${u.balance}</b>`);
       }
@@ -62,17 +69,19 @@ export function createNotifier(api, store) {
 
     async homework(b) {
       const u = await store.getUser(b.user_id);
-      return N.toUser(u, `📚 <b>Домашнее задание</b> (урок ${fmtDate(b.date)})\n${b.topic ? `Тема: ${esc(b.topic)}\n` : ''}\n${esc(b.homework)}`);
+      return N.toUser(u, `📚 <b>Домашнее задание</b> (урок ${N.whenDate(u, b.date, b.start)})\n${b.topic ? `Тема: ${esc(b.topic)}\n` : ''}\n${esc(b.homework)}`);
     },
 
     async reminder(b, kind) {
       const u = await store.getUser(b.user_id);
       if (!u?.tg_id) return;
-      const when = `<b>${fmtDate(b.date)}, ${b.start}</b>`;
+      const when = `<b>${N.when(u, b.date, b.start)}</b>`;
       if (kind === 'rem24' && u.n_24h) {
         const hw = await store.lastHomework(u.id);
+        const vtz = store.tzOf(u);
+        const sameDay = store.toTz(b.date, b.start, vtz).date === store.nowIn(vtz).date;
         await N.toUser(u,
-          `⏰ <b>${b.date === store.T.now().date ? 'Сегодня' : 'Завтра'} урок английского</b> — ${when}\n\n` +
+          `⏰ <b>${sameDay ? 'Сегодня' : 'Завтра'} урок английского</b> — ${when}\n\n` +
           (hw ? `📚 Не забудьте сделать домашнее задание:\n${esc(hw.homework)}\n\n` : '📚 Не забудьте сделать домашнее задание, если оно было.\n\n') +
           'Если планы изменились — перенести или отменить урок можно в «📋 Мои уроки».');
       }

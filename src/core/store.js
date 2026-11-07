@@ -1,7 +1,7 @@
 // Слой данных. Работает поверх любого SQLite-адаптера:
 //   sql.all(query, args) → rows,  sql.first(query, args) → row|null,  sql.run(query, args) → { lastId, changes }
 // На Mac — node:sqlite, на Cloudflare — D1.
-import { makeTime, toMin, fromMin, addDays, isoWeekday } from './time.js';
+import { makeTime, toMin, fromMin, addDays, isoWeekday, convert, zonedToUtc, isValidTz } from './time.js';
 
 export const DEFAULT_SETTINGS = {
   teacher_name: 'Таня',
@@ -31,6 +31,12 @@ export function createStore(sql, cfg) {
 
   const S = {
     T,
+    cfg,
+    /** Перевод времени преподавателя в пояс зрителя. */
+    toTz: (date, time, tz) => convert(date, time, cfg.tz, tz || cfg.tz),
+    atUtc: (date, time) => zonedToUtc(date, time, cfg.tz),
+    /** Пояс, в котором человек видит время: преподаватель — свой, ученик — свой (по умолчанию Москва). */
+    tzOf: (u) => (u && !cfg.adminIds.has(Number(u.tg_id)) ? u.tz || 'Europe/Moscow' : cfg.tz),
     // ---------- settings ----------
     async init() {
       for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
@@ -108,7 +114,8 @@ export function createStore(sql, cfg) {
     userByTg: (tgId) => sql.first('SELECT * FROM users WHERE tg_id = ?', [tgId]),
     getUser: (id) => sql.first('SELECT * FROM users WHERE id = ?', [id]),
     async updateUser(id, fields, actorTgId) {
-      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done'];
+      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz'];
+      if ('tz' in fields && !isValidTz(fields.tz)) throw new Error('Неизвестный часовой пояс');
       const keys = Object.keys(fields).filter((k) => allowed.includes(k));
       if (!keys.length) return S.getUser(id);
       const vals = keys.map((k) => {
@@ -207,7 +214,7 @@ export function createStore(sql, cfg) {
           for (let t = toMin(win.start); t + dur <= toMin(win.end); t += step) {
             const overlaps = busy.some(([a, b]) => t < b && t + dur > a);
             const past = T.minutesUntil(d, fromMin(t)) < minAhead;
-            slots.push({ start: fromMin(t), end: fromMin(t + dur), free: !overlaps && !past, busy: overlaps, past });
+            slots.push({ date: d, start: fromMin(t), end: fromMin(t + dur), at: zonedToUtc(d, fromMin(t), cfg.tz), free: !overlaps && !past, busy: overlaps, past });
           }
         }
         const capacity = win ? Math.floor((toMin(win.end) - toMin(win.start)) / dur) : 0;
@@ -221,6 +228,21 @@ export function createStore(sql, cfg) {
       return out;
     },
     async slotsFor(date) { return (await S.slotsRange(date, date))[date].slots; },
+    /** Свободные слоты, сгруппированные по дате в поясе зрителя: { 'YYYY-MM-DD': [{date,start,vtime}] }. */
+    async freeByViewerDate(tz, fromT, toT) {
+      const r = await S.slotsRange(fromT, toT);
+      const out = {};
+      for (const day of Object.values(r)) {
+        for (const sl of day.slots) {
+          if (!sl.free) continue;
+          const v = convert(sl.date, sl.start, cfg.tz, tz);
+          (out[v.date] ||= []).push({ date: sl.date, start: sl.start, vtime: v.time });
+        }
+      }
+      for (const k of Object.keys(out)) out[k].sort((a, b) => a.vtime.localeCompare(b.vtime));
+      return out;
+    },
+    nowIn: (tz) => convert(T.now().date, T.now().time, cfg.tz, tz),
     async calendarRange(from, to, { withSlots = false } = {}) {
       const r = await S.slotsRange(from, to);
       return Object.values(r).map(({ slots, ...d }) => (withSlots ? { ...d, slots } : d));

@@ -80,6 +80,14 @@ const ACTIONS = {
   'system.setup': 'Настройка сервера', 'security.flood': 'Защита: флуд', 'security.admin_code_fail': 'Защита: неверный код',
   'security.admin_added': 'Новый преподаватель',
 };
+/** Момент (ms) → дата/время в поясе зрителя. */
+let zFmt = null;
+function localOf(ms) {
+  zFmt ||= new Intl.DateTimeFormat('en-CA', { timeZone: S.tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const p = Object.fromEntries(zFmt.formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
+}
+const tzName = (tz) => (S.me.timezones.find(([z]) => z === tz)?.[2] || tz);
 const loadLevel = (d) => (d.off ? -1 : d.load === 0 ? 0 : d.load < 0.34 ? 1 : d.load < 0.67 ? 2 : d.load < 1 ? 3 : 4);
 const initials = (n) => (n || '?').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 const haptic = (t = 'light') => tg?.HapticFeedback?.impactOccurred(t);
@@ -115,10 +123,29 @@ const S = { me: null, tab: null, month: null, selDate: null, cur: '₽', monthCa
 async function loadMonth(ym, force = false) {
   if (!force && S.monthCache.has(ym)) return S.monthCache.get(ym);
   const [from, to] = monthBounds(ym);
-  const p = api(`/api/month?from=${from}&to=${to}`).then((days) => Object.fromEntries(days.map((d) => [d.date, d])));
+  const p = S.me.admin
+    ? api(`/api/month?from=${from}&to=${to}`).then((days) => Object.fromEntries(days.map((d) => [d.date, d])))
+    : api(`/api/month?from=${addDays(from, -1)}&to=${addDays(to, 1)}`).then((days) => studentDays(days, from, to));
   S.monthCache.set(ym, p);
   p.catch(() => S.monthCache.delete(ym));
   return p;
+}
+/** Расписание преподавателя → дни в часовом поясе ученика. */
+function studentDays(days, from, to) {
+  const out = {};
+  for (let d = from; d <= to; d = addDays(d, 1)) out[d] = { date: d, slots: [], free: 0, off: true };
+  for (const day of days) {
+    for (const sl of day.slots || []) {
+      const v = localOf(sl.at);
+      const tgt = out[v.date];
+      if (!tgt || (sl.past && !sl.busy)) continue;
+      tgt.slots.push({ start: v.time, tDate: sl.date, tStart: sl.start, free: sl.free, busy: sl.busy });
+      if (sl.free) tgt.free++;
+      tgt.off = false;
+    }
+  }
+  for (const d of Object.values(out)) d.slots.sort((a, b) => a.start.localeCompare(b.start));
+  return out;
 }
 const nextYm = (ym, k) => { const [y, m] = ym.split('-').map(Number); return iso(new Date(Date.UTC(y, m - 1 + k, 1))).slice(0, 7); };
 
@@ -143,14 +170,14 @@ async function monthCalendar(container, { onPick, studentMode }) {
       ${'<div class="day empty"></div>'.repeat(lead)}
       ${Object.values(days).map((d) => {
         const past = d.date < today;
-        const meta = d.off ? 'вых' : studentMode ? (open(d) ? `${d.free} св.` : '') : d.lessons ? `${d.lessons}/${d.capacity}` : '';
+        const meta = d.off ? (studentMode ? '' : 'вых') : studentMode ? (open(d) ? `${d.free} св.` : '') : d.lessons ? `${d.lessons}/${d.capacity}` : '';
         const cls = ['day', d.off && 'off', past && 'past', d.date === today && 'today', d.date === S.selDate && 'sel', studentMode && open(d) && 'free-dot'].filter(Boolean).join(' ');
         return `<button class="${cls}" data-l="${studentMode ? 0 : loadLevel(d)}" data-date="${d.date}" ${studentMode && (past || d.off) ? 'disabled' : ''}>
           <span class="n">${Number(d.date.slice(8))}</span><span class="meta">${meta}</span></button>`;
       }).join('')}
     </div>
     ${studentMode
-      ? '<div class="legend"><span><i class="dot-ok"></i>есть свободные окна</span><span><i class="hatch"></i>выходной</span></div>'
+      ? `<div class="legend"><span><i class="dot-ok"></i>есть свободные окна</span><span>🌍 время: ${esc(tzName(S.tz))}</span></div>`
       : `<div class="legend"><span>Загрузка:</span><span class="scale">${[0, 1, 2, 3, 4].map((i) => `<i style="background:var(--load-${i})"></i>`).join('')}</span><span>0 → 100%</span><span><i class="hatch"></i>выходной</span></div>`}`;
   container.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => {
     S.month = nextYm(ym, Number(b.dataset.m));
@@ -172,7 +199,7 @@ const studentTabs = [
   { id: 'book', icon: '📅', label: 'Запись' },
   { id: 'my', icon: '📋', label: 'Мои уроки' },
   { id: 'pay', icon: '💳', label: 'Оплата' },
-  { id: 'notif', icon: '🔔', label: 'Уведомления' },
+  { id: 'notif', icon: '⚙️', label: 'Настройки' },
 ];
 
 async function studentBook() {
@@ -186,27 +213,28 @@ async function studentBook() {
 /** Слоты берутся из уже загруженного месяца — переключение дат мгновенное. */
 function renderSlots(date, day) {
   const box = $('#slots');
-  const slots = (day?.slots || []).filter((s) => !s.past || s.busy);
+  const slots = day?.slots || [];
   let chosen = null;
   box.innerHTML = `
     <div class="card-head"><h2>${fmt(date)}</h2><span class="muted small">${S.me.settings.lesson_duration} мин · ${money(S.me.price)}</span></div>
-    ${slots.some((s) => s.free) ? `<div class="slots">${slots.map((s) => `<button class="slot" data-t="${s.start}" ${s.free ? '' : 'disabled'}>${s.start}</button>`).join('')}</div>
+    ${slots.some((s) => s.free) ? `<div class="slots">${slots.map((s) => `<button class="slot" data-t="${s.start}" data-td="${s.tDate}" data-ts="${s.tStart}" ${s.free ? '' : 'disabled'}>${s.start}</button>`).join('')}</div>
+      <div class="muted small" style="margin-top:8px">🌍 Время указано по вашему часовому поясу: ${esc(tzName(S.tz))}</div>
       <button class="btn primary block" id="bookBtn" style="margin-top:14px" disabled>Выберите время</button>`
       : '<div class="empty-state"><div>🌙</div>Свободных окон нет</div>'}`;
   box.querySelectorAll('.slot').forEach((b) => b.onclick = () => {
     box.querySelectorAll('.slot.on').forEach((x) => x.classList.remove('on'));
     b.classList.add('on');
-    chosen = b.dataset.t;
+    chosen = { label: b.dataset.t, date: b.dataset.td, start: b.dataset.ts };
     haptic();
     const btn = $('#bookBtn');
     btn.disabled = false;
-    btn.textContent = `Записаться на ${chosen}`;
+    btn.textContent = `Записаться на ${chosen.label}`;
   });
   const btn = $('#bookBtn');
   if (btn) btn.onclick = async () => {
     btn.disabled = true;
     try {
-      const b = await run(() => api('/api/book', { date, start: chosen }));
+      const b = await run(() => api('/api/book', { date: chosen.date, start: chosen.start }));
       toast(b.status === 'confirmed' ? '✅ Вы записаны!' : '⏳ Заявка отправлена преподавателю');
       tg?.HapticFeedback?.notificationOccurred('success');
       S.monthCache.delete(date.slice(0, 7));
@@ -219,18 +247,19 @@ async function studentMy() {
   const d = await api('/api/my');
   updateBadge(d.balance);
   const past = d.history.filter((b) => !d.upcoming.some((u) => u.id === b.id));
+  const when = (b) => { const v = localOf(b.at); return `${fmt(v.date)}, ${v.time}`; };
   view.innerHTML = `
     <section class="card">
       <div class="card-head"><h2>Ближайшие уроки</h2></div>
       <div class="list">${d.upcoming.length ? d.upcoming.map((b) => `
-        <div class="item static"><div><div class="t">${fmt(b.date)}, ${b.start}</div><div class="s"><span class="pill ${b.status}">${STATUS[b.status]}</span></div></div>
+        <div class="item static"><div><div class="t">${when(b)}</div><div class="s"><span class="pill ${b.status}">${STATUS[b.status]}</span></div></div>
         <button class="btn bad sm" data-cancel="${b.id}">Отменить</button></div>`).join('')
         : '<div class="empty-state"><div>📭</div>Пока ничего не запланировано</div>'}</div>
     </section>
     <section class="card">
       <div class="card-head"><h2>История и домашка</h2></div>
       <div class="list">${past.length ? past.map((b) => `
-        <div class="item static"><div><div class="t">${fmt(b.date)}, ${b.start}${b.topic ? ` · ${esc(b.topic)}` : ''}</div>
+        <div class="item static"><div><div class="t">${when(b)}${b.topic ? ` · ${esc(b.topic)}` : ''}</div>
         ${b.homework ? `<div class="s">📚 ${esc(b.homework)}</div>` : ''}</div><span class="pill ${b.status}">${STATUS[b.status]}</span></div>`).join('')
         : '<div class="empty-state small">Здесь появятся прошедшие уроки</div>'}</div>
     </section>`;
@@ -274,7 +303,15 @@ async function studentPay() {
 
 async function studentNotif() {
   const d = await api('/api/my');
+  const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const known = S.me.timezones.some(([z]) => z === S.tz);
   view.innerHTML = `
+    <section class="card">
+      <div class="card-head"><h2>🌍 Часовой пояс</h2></div>
+      <p class="muted small" style="margin-top:0">Время уроков в календаре и в сообщениях бота показывается по вашему поясу. Преподаватель видит своё время — всё пересчитывается автоматически.</p>
+      <div class="field"><select id="tzSel">${known ? '' : `<option value="${esc(S.tz)}">${esc(S.tz)}</option>`}${S.me.timezones.map(([z, , label]) => `<option value="${z}" ${z === S.tz ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
+      ${detected && detected !== S.tz ? `<button class="btn ghost block" id="tzAuto" style="margin-top:10px">Определить автоматически: ${esc(detected)}</button>` : ''}
+    </section>
     <section class="card">
       <div class="card-head"><h2>Уведомления</h2></div>
       <p class="muted small" style="margin-top:0">Выключите те напоминания, которые вам не нужны. Остальные продолжат приходить.</p>
@@ -283,6 +320,12 @@ async function studentNotif() {
           <input type="checkbox" data-k="${k}" ${d.notify[k] ? 'checked' : ''}><span class="sw"></span></label>`).join('')}</div>
       <p class="muted small">Напоминания об оплате и сообщения от преподавателя приходят всегда.</p>
     </section>`;
+  const setTz = (tz) => run(() => api('/api/tz', { tz }), 'Часовой пояс сохранён').then(() => {
+    S.tz = tz; S.me.tz = tz; zFmt = null; S.monthCache.clear(); studentNotif();
+  });
+  $('#tzSel').onchange = (e) => setTz(e.target.value);
+  const auto = $('#tzAuto');
+  if (auto) auto.onclick = () => setTz(detected);
   view.querySelectorAll('[data-k]').forEach((cb) => cb.onchange = () =>
     run(() => api('/api/notify', { key: cb.dataset.k, value: cb.checked }), cb.checked ? 'Включено' : 'Выключено').catch(() => { cb.checked = !cb.checked; }));
 }
@@ -651,7 +694,7 @@ async function studentSheet(id) {
   const price = u.price ?? Number(S.me.settings.price);
   openSheet(`
     <div class="row nowrap"><div class="avatar ${u.tg_id ? '' : 'manual'}">${initials(u.name)}</div>
-      <div><h2>${esc(u.name)}</h2><div class="muted small">${u.tg_id ? (u.username ? '@' + esc(u.username) : 'Telegram подключён') : '📒 без Telegram — только учёт'}</div></div></div>
+      <div><h2>${esc(u.name)}</h2><div class="muted small">${u.tg_id ? (u.username ? '@' + esc(u.username) : 'Telegram подключён') + ' · 🌍 ' + esc(tzName(u.tz || 'Europe/Moscow')) : '📒 без Telegram — только учёт'}</div></div></div>
     <div class="kpis" style="margin-top:12px">
       <div class="kpi"><span>Баланс, уроков</span><b class="${u.balance < 1 ? 'neg' : ''}">${u.balance}</b></div>
       <div class="kpi"><span>Проведено</span><b>${cnt((b) => b.status === 'done')}</b></div>
@@ -822,6 +865,7 @@ async function go(tab) {
     return;
   }
   S.cur = S.me.settings.currency || '₽';
+  S.tz = S.me.tz;
   S.month = S.me.today.date.slice(0, 7);
   const admin = S.me.admin;
   $('#hello').textContent = admin ? 'Панель преподавателя' : `Преподаватель — ${S.me.settings.teacher_name}`;

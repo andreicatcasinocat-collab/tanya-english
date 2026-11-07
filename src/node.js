@@ -2,7 +2,7 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile, mkdir } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -30,7 +30,13 @@ await mkdir(path.dirname(dbPath), { recursive: true });
 // ---------- SQLite-адаптер ----------
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-db.exec(readFileSync(path.join(ROOT, 'migrations', '0001_init.sql'), 'utf8'));
+// Миграции: применяем по порядку, запоминаем применённые
+db.exec('CREATE TABLE IF NOT EXISTS node_migrations (name TEXT PRIMARY KEY)');
+for (const f of readdirSync(path.join(ROOT, 'migrations')).filter((x) => x.endsWith('.sql')).sort()) {
+  if (db.prepare('SELECT 1 FROM node_migrations WHERE name = ?').get(f)) continue;
+  try { db.exec(readFileSync(path.join(ROOT, 'migrations', f), 'utf8')); } catch (e) { if (!/duplicate column/i.test(e.message)) throw e; }
+  db.prepare('INSERT INTO node_migrations(name) VALUES (?)').run(f);
+}
 const sql = {
   all: async (q, a = []) => db.prepare(q).all(...a),
   first: async (q, a = []) => db.prepare(q).get(...a) ?? null,

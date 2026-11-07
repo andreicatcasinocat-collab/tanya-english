@@ -11,7 +11,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "tanya-english"
-database_id = "REPLACE_AFTER_CREATE"
+database_id = "c04aac63-e9c4-49f7-a7a4-65db5d450dfe"
 migrations_dir = "migrations"
 
 # Напоминания ученикам — каждую минуту
