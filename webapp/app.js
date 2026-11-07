@@ -320,7 +320,7 @@ async function studentNotif() {
       <p class="muted small" style="margin-top:0">Время уроков в календаре и в сообщениях бота показывается по вашему поясу. Преподаватель видит своё время — всё пересчитывается автоматически.</p>
       <label class="item toggle" style="margin-bottom:10px"><div><div class="t">Определять автоматически</div><div class="s">по времени на вашем телефоне — если переедете, пояс обновится сам</div></div>
         <input type="checkbox" id="tzAutoCb" ${S.me.user.tz_auto ? 'checked' : ''}><span class="sw"></span></label>
-      <div class="field"><label>Или выберите вручную</label><select id="tzSel">${known ? '' : `<option value="${esc(S.tz)}">${esc(S.tz)}</option>`}${S.me.timezones.map(([z, , label]) => `<option value="${z}" ${z === S.tz ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
+      <div class="field"><label>Или выберите вручную</label><select id="tzSel">${known ? '' : `<option value="${esc(S.tz)}" selected>${esc(tzName(S.tz))}</option>`}${S.me.timezones.map(([z, , label]) => `<option value="${z}" ${z === S.tz ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
 
     </section>
     <section class="card">
