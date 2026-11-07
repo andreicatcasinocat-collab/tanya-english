@@ -309,8 +309,10 @@ async function studentNotif() {
     <section class="card">
       <div class="card-head"><h2>🌍 Часовой пояс</h2></div>
       <p class="muted small" style="margin-top:0">Время уроков в календаре и в сообщениях бота показывается по вашему поясу. Преподаватель видит своё время — всё пересчитывается автоматически.</p>
-      <div class="field"><select id="tzSel">${known ? '' : `<option value="${esc(S.tz)}">${esc(S.tz)}</option>`}${S.me.timezones.map(([z, , label]) => `<option value="${z}" ${z === S.tz ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
-      ${detected && detected !== S.tz ? `<button class="btn ghost block" id="tzAuto" style="margin-top:10px">Определить автоматически: ${esc(detected)}</button>` : ''}
+      <label class="item toggle" style="margin-bottom:10px"><div><div class="t">Определять автоматически</div><div class="s">по времени на вашем телефоне — если переедете, пояс обновится сам</div></div>
+        <input type="checkbox" id="tzAutoCb" ${S.me.user.tz_auto ? 'checked' : ''}><span class="sw"></span></label>
+      <div class="field"><label>Или выберите вручную</label><select id="tzSel">${known ? '' : `<option value="${esc(S.tz)}">${esc(S.tz)}</option>`}${S.me.timezones.map(([z, , label]) => `<option value="${z}" ${z === S.tz ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>
+
     </section>
     <section class="card">
       <div class="card-head"><h2>Уведомления</h2></div>
@@ -320,12 +322,11 @@ async function studentNotif() {
           <input type="checkbox" data-k="${k}" ${d.notify[k] ? 'checked' : ''}><span class="sw"></span></label>`).join('')}</div>
       <p class="muted small">Напоминания об оплате и сообщения от преподавателя приходят всегда.</p>
     </section>`;
-  const setTz = (tz) => run(() => api('/api/tz', { tz }), 'Часовой пояс сохранён').then(() => {
-    S.tz = tz; S.me.tz = tz; zFmt = null; S.monthCache.clear(); studentNotif();
+  const setTz = (tz, auto) => run(() => api('/api/tz', { tz, auto, force: auto }), 'Часовой пояс сохранён').then((r) => {
+    S.tz = r.tz; S.me.tz = r.tz; S.me.user.tz_auto = r.auto ? 1 : 0; zFmt = null; S.monthCache.clear(); studentNotif();
   });
-  $('#tzSel').onchange = (e) => setTz(e.target.value);
-  const auto = $('#tzAuto');
-  if (auto) auto.onclick = () => setTz(detected);
+  $('#tzSel').onchange = (e) => setTz(e.target.value, false);
+  $('#tzAutoCb').onchange = (e) => (e.target.checked && detected ? setTz(detected, true) : setTz(S.tz, false));
   view.querySelectorAll('[data-k]').forEach((cb) => cb.onchange = () =>
     run(() => api('/api/notify', { key: cb.dataset.k, value: cb.checked }), cb.checked ? 'Включено' : 'Выключено').catch(() => { cb.checked = !cb.checked; }));
 }
@@ -866,6 +867,24 @@ async function go(tab) {
   }
   S.cur = S.me.settings.currency || '₽';
   S.tz = S.me.tz;
+  // Часовой пояс ученика берём с устройства: при первом входе, после переезда и т.п.
+  // Если ученик выбрал пояс вручную (tz_auto = 0) — не трогаем.
+  const deviceTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return null; } })();
+  if (!S.me.admin && deviceTz) {
+    if (qs.get('detect') === '1') {
+      try {
+        const r = await api('/api/tz', { tz: deviceTz, auto: true, force: true, notify: true });
+        S.tz = r.tz;
+        view.innerHTML = `<section class="card empty-state"><div>🌍</div><h2>Часовой пояс определён</h2><p>${esc(r.label)}</p><p class="muted small">${r.registered ? 'Можно возвращаться в чат — сообщение уже там.' : ''}</p><button class="btn primary block" id="toChat">Вернуться в чат</button></section>`;
+        $('#toChat').onclick = () => tg?.close?.();
+        setTimeout(() => tg?.close?.(), 2500);
+        return;
+      } catch (e) { toast('⚠️ ' + e.message); }
+    } else if (S.me.user.tz_auto && deviceTz !== S.me.tz) {
+      try { const r = await api('/api/tz', { tz: deviceTz, auto: true }); S.tz = r.tz; S.me.tz = r.tz; S.me.today = null; } catch { /* оставим как есть */ }
+    }
+  }
+  if (!S.me.today) { const v = localOf(S.me.now); S.me.today = v; }
   S.month = S.me.today.date.slice(0, 7);
   const admin = S.me.admin;
   $('#hello').textContent = admin ? 'Панель преподавателя' : `Преподаватель — ${S.me.settings.teacher_name}`;

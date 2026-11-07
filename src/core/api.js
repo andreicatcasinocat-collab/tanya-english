@@ -55,7 +55,7 @@ async function verifyInitData(initData, token) {
   try { return JSON.parse(params.get('user') || 'null'); } catch { return null; }
 }
 
-export function createApi({ store, cfg, bot, N, applyStatus }) {
+export function createApi({ store, cfg, bot, N, applyStatus, finishRegistration }) {
   const T = store.T;
   const need = (cond, msg = 'Некорректные данные') => { if (!cond) throw new Error(msg); };
   const range = (q) => {
@@ -80,10 +80,18 @@ export function createApi({ store, cfg, bot, N, applyStatus }) {
         timezones: TIMEZONES.map(([z, n]) => [z, n, tzLabel(z)]),
       };
     },
+    // auto: true — пояс определён по устройству (меняем, только если ученик не выбрал вручную или включает авто);
+    // auto: false — ученик выбрал сам.
     'POST /api/tz': async ({ u, tgId, body }) => {
       need(isValidTz(body.tz), 'Неизвестный часовой пояс');
-      await store.updateUser(u.id, { tz: body.tz }, tgId);
-      return { tz: body.tz, label: tzLabel(body.tz) };
+      const st = await store.getState(tgId);
+      const registering = st?.type === 'reg_tz';
+      if (body.auto && !u.tz_auto && !body.force && !registering) return { tz: u.tz, label: tzLabel(u.tz), auto: false, changed: false };
+      const changed = u.tz !== body.tz;
+      await store.updateUser(u.id, { tz: body.tz, tz_auto: body.auto ? 1 : 0 }, tgId);
+      if (registering) await finishRegistration(tgId, u.id);
+      else if (body.notify && changed) await bot.api.sendMessage(tgId, `🌍 Часовой пояс: <b>${tzLabel(body.tz)}</b> ✅\nВремя уроков теперь показывается по нему.`, { parse_mode: 'HTML' }).catch(() => {});
+      return { tz: body.tz, label: tzLabel(body.tz), auto: !!body.auto, changed, registered: registering || !!u.registered };
     },
     'GET /api/month': async ({ q }) => {
       const [from, to] = range(q);

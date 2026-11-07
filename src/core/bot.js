@@ -112,26 +112,43 @@ export function createBot({ token, store, cfg, botInfo }) {
     TIMEZONES.forEach(([, name], i) => { kb.text(name, `${prefix}|${i}`); if (i % 3 === 2) kb.row(); });
     return kb;
   };
+  /** Ссылка на сайт в режиме «определить часовой пояс по устройству». */
+  const detectUrl = () => (cfg.webAppUrl ? `${cfg.webAppUrl}${cfg.webAppUrl.includes('?') ? '&' : '?'}detect=1` : null);
+  const tzAskKeyboard = (prefix) => {
+    const kb = new InlineKeyboard();
+    const url = detectUrl();
+    if (url) kb.webApp('🌍 Определить автоматически', url).row();
+    return kb.text('Выбрать из списка', `${prefix}|list`);
+  };
   bot.callbackQuery(/^reg\|goal\|(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     await store.updateUser(ctx.u.id, { goal: GOALS[Number(ctx.match[1])] }, ctx.from.id);
-    const kb = new InlineKeyboard().text('🇷🇺 Москва (UTC+3)', `tzr|${TIMEZONES.findIndex(([z]) => z === 'Europe/Moscow')}`).row().text('Другой часовой пояс…', 'tzr|list');
-    await ctx.editMessageText(`Цель: <b>${esc(GOALS[Number(ctx.match[1])])}</b> ✅\n\n🌍 В каком часовом поясе вы живёте? Время уроков буду показывать по нему.`, { parse_mode: 'HTML', reply_markup: kb });
+    await store.setState(ctx.from.id, { type: 'reg_tz' });
+    await ctx.editMessageText(`Цель: <b>${esc(GOALS[Number(ctx.match[1])])}</b> ✅\n\n🌍 Последний шаг — часовой пояс, чтобы время уроков показывалось по вашему местному времени.\n\nНажмите «Определить автоматически» — я возьму его с вашего телефона. Или выберите из списка.`,
+      { parse_mode: 'HTML', reply_markup: tzAskKeyboard('tzr') });
   });
   bot.callbackQuery('tzr|list', async (ctx) => {
     await ctx.answerCallbackQuery();
     await ctx.editMessageReplyMarkup({ reply_markup: tzKeyboard('tzr') });
   });
-  bot.callbackQuery(/^tzr\|(\d+)$/, async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const tz = TIMEZONES[Number(ctx.match[1])]?.[0] || 'Europe/Moscow';
-    await store.setState(ctx.from.id, null);
-    const u = await store.updateUser(ctx.u.id, { tz, registered: 1 }, ctx.from.id);
-    await store.log(ctx.from.id, 'user.registered', { user_id: u.id, name: u.name, level: u.level, goal: u.goal });
-    await ctx.editMessageText(`🌍 Часовой пояс: <b>${tzLabel(tz)}</b> ✅`, { parse_mode: 'HTML' });
-    await ctx.reply('Готово! Теперь можно записаться на урок 👇\n\n🔔 Я буду напоминать об уроках за сутки, за 2 часа и за 15 минут. Настроить — кнопка «🔔 Уведомления».', { reply_markup: studentMenu() });
+  /** Завершение регистрации (вызывается и из бота, и с сайта после автоопределения пояса). */
+  async function finishRegistration(tgId, uid) {
+    await store.setState(tgId, null);
+    const u = await store.updateUser(uid, { registered: 1 }, tgId);
+    await store.log(tgId, 'user.registered', { user_id: u.id, name: u.name, level: u.level, goal: u.goal, tz: u.tz });
+    await bot.api.sendMessage(tgId, `🌍 Часовой пояс: <b>${tzLabel(u.tz)}</b> ✅\n\nГотово! Теперь можно записаться на урок 👇\n\n🔔 Я буду напоминать об уроках за сутки, за 2 часа и за 15 минут. Настроить — кнопка «🔔 Уведомления».`,
+      { parse_mode: 'HTML', reply_markup: studentMenu() }).catch((e) => console.error('finish reg', e.message));
     await N.toAdmins(`🆕 Новый ученик: ${who(u)}\nУровень: ${esc(u.level)} · Цель: ${esc(u.goal)}\n🌍 ${tzLabel(u.tz)}`,
       { reply_markup: new InlineKeyboard().text('Открыть карточку', `stu|${u.id}`) });
+    return u;
+  }
+  bot.callbackQuery(/^tzr\|(\d+)$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const tz = TIMEZONES[Number(ctx.match[1])]?.[0];
+    if (!tz) return;
+    await store.updateUser(ctx.u.id, { tz, tz_auto: 0 }, ctx.from.id);
+    await ctx.deleteMessage().catch(() => {});
+    await finishRegistration(ctx.from.id, ctx.u.id);
   });
 
   // ---------- выбор даты/времени ----------
@@ -305,7 +322,7 @@ export function createBot({ token, store, cfg, botInfo }) {
   const notifyKb = (u) => {
     const kb = new InlineKeyboard();
     for (const [key, title] of NOTIFY_TYPES) kb.text(`${u[key] ? '✅' : '🔕'} ${title}`, `nt|${key}`).row();
-    kb.text(`🌍 Часовой пояс: ${tzLabel(u.tz || 'Europe/Moscow')}`, 'tzm|list');
+    kb.text(`🌍 Часовой пояс: ${tzLabel(u.tz || 'Europe/Moscow')}${u.tz_auto ? ' · авто' : ''}`, 'tzm|list');
     return kb;
   };
   const notifyText = () => '🔔 <b>Уведомления</b>\n\nНажмите, чтобы включить или выключить:\n' +
@@ -322,12 +339,16 @@ export function createBot({ token, store, cfg, botInfo }) {
 
   bot.callbackQuery('tzm|list', async (ctx) => {
     await ctx.answerCallbackQuery();
-    await ctx.reply('🌍 Выберите ваш часовой пояс — время уроков будет показываться по нему:', { reply_markup: tzKeyboard('tzm') });
+    const kb = tzKeyboard('tzm');
+    const url = detectUrl();
+    if (url) kb.row().webApp('🌍 Определить автоматически', url);
+    await ctx.reply(`🌍 Сейчас: <b>${tzLabel(ctx.u.tz)}</b>${ctx.u.tz_auto ? ' (определяется автоматически)' : ''}\n\nВыберите ваш часовой пояс — время уроков будет показываться по нему:`,
+      { parse_mode: 'HTML', reply_markup: kb });
   });
   bot.callbackQuery(/^tzm\|(\d+)$/, async (ctx) => {
     const tz = TIMEZONES[Number(ctx.match[1])]?.[0];
     if (!tz) return ctx.answerCallbackQuery();
-    await store.updateUser(ctx.u.id, { tz }, ctx.from.id);
+    await store.updateUser(ctx.u.id, { tz, tz_auto: 0 }, ctx.from.id);
     await ctx.answerCallbackQuery('Сохранено');
     await ctx.editMessageText(`🌍 Часовой пояс: <b>${tzLabel(tz)}</b> ✅\nТеперь время уроков показывается по нему.`, { parse_mode: 'HTML' });
   });
@@ -654,5 +675,5 @@ export function createBot({ token, store, cfg, botInfo }) {
     if (cfg.webAppUrl) await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', text: 'Сайт', web_app: { url: cfg.webAppUrl } } });
   }
 
-  return { bot, N, applyStatus, runReminders, setupCommands };
+  return { bot, N, applyStatus, runReminders, setupCommands, finishRegistration };
 }

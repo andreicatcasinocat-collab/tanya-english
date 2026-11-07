@@ -114,13 +114,13 @@ export function createStore(sql, cfg) {
     userByTg: (tgId) => sql.first('SELECT * FROM users WHERE tg_id = ?', [tgId]),
     getUser: (id) => sql.first('SELECT * FROM users WHERE id = ?', [id]),
     async updateUser(id, fields, actorTgId) {
-      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz'];
+      const allowed = ['name', 'phone', 'level', 'goal', 'notes', 'blocked', 'registered', 'price', 'n_24h', 'n_2h', 'n_15m', 'n_done', 'tz', 'tz_auto'];
       if ('tz' in fields && !isValidTz(fields.tz)) throw new Error('Неизвестный часовой пояс');
       const keys = Object.keys(fields).filter((k) => allowed.includes(k));
       if (!keys.length) return S.getUser(id);
       const vals = keys.map((k) => {
         if (k === 'price') return fields[k] === '' || fields[k] == null ? null : Number(fields[k]);
-        if (k.startsWith('n_') || k === 'blocked' || k === 'registered') return fields[k] ? 1 : 0;
+        if (k.startsWith('n_') || k === 'blocked' || k === 'registered' || k === 'tz_auto') return fields[k] ? 1 : 0;
         return String(fields[k] ?? '').slice(0, 2000);
       });
       await sql.run(`UPDATE users SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`, [...vals, id]);

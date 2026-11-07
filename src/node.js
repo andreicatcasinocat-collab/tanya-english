@@ -47,12 +47,12 @@ await store.init();
 
 if (!cfg.botToken && !cfg.devMode) { console.error('❌ Не задан BOT_TOKEN в .env'); process.exit(1); }
 
-const { bot, N, applyStatus, runReminders, setupCommands } = createBot({
+const { bot, N, applyStatus, runReminders, setupCommands, finishRegistration } = createBot({
   token: cfg.botToken || '0:dev', store, cfg,
   botInfo: cfg.botToken ? undefined : { id: 0, is_bot: true, first_name: 'Dev', username: 'dev_bot' },
 });
 if (cfg.botToken) await bot.init();
-const handleApi = createApi({ store, cfg, bot, N, applyStatus });
+const handleApi = createApi({ store, cfg, bot, N, applyStatus, finishRegistration });
 
 // ---------- HTTP: API + статика мини-приложения ----------
 const WEBAPP = path.join(ROOT, 'webapp');

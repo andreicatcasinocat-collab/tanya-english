@@ -28,9 +28,9 @@ async function getApp(env, origin) {
   await store.init();
   // BOT_INFO (JSON) — только для локальных тестов без настоящего токена
   const botInfo = env.BOT_INFO ? JSON.parse(env.BOT_INFO) : undefined;
-  const { bot, N, applyStatus, runReminders, setupCommands } = createBot({ token: env.BOT_TOKEN, store, cfg, botInfo });
+  const { bot, N, applyStatus, runReminders, setupCommands, finishRegistration } = createBot({ token: env.BOT_TOKEN, store, cfg, botInfo });
   if (!botInfo) await bot.init();
-  const handleApi = createApi({ store, cfg, bot, N, applyStatus });
+  const handleApi = createApi({ store, cfg, bot, N, applyStatus, finishRegistration });
   const onUpdate = webhookCallback(bot, 'cloudflare-mod', { secretToken: env.WEBHOOK_SECRET });
   app = { cfg, store, bot, handleApi, onUpdate, runReminders, setupCommands };
   return app;
