@@ -6,6 +6,18 @@ if (tg?.colorScheme) document.documentElement.dataset.theme = tg.colorScheme;
 
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
+
+// ---------- иконки (Lucide) ----------
+const ic = (name) => `<i data-lucide="${name}"></i>`;
+const H = (icon, text) => `<h2><span class="hi">${ic(icon)}</span>${text}</h2>`;
+let icQueued = false;
+function drawIcons() {
+  icQueued = false;
+  if (window.lucide && document.querySelector('i[data-lucide]')) window.lucide.createIcons({ attrs: { 'stroke-width': 1.9 } });
+}
+new MutationObserver(() => { if (!icQueued) { icQueued = true; requestAnimationFrame(drawIcons); } })
+  .observe(document.body, { childList: true, subtree: true });
+drawIcons();
 const qs = new URLSearchParams(location.search);
 const devAs = qs.get('as');
 // Адрес API: по умолчанию тот же сайт. Для копии на GitHub Pages бот передаёт ?api= (только доверенные адреса).
@@ -97,6 +109,16 @@ function tzName(tz) {
   try { off = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value.replace('GMT', 'UTC') || ''; } catch { /* без смещения */ }
   return off ? `${city} (${off === 'UTC' ? 'UTC+0' : off})` : city;
 }
+const STATUS_IC = { pending: 'hourglass', confirmed: 'circle-check', cancelled: 'circle-x', late_cancel: 'alarm-clock-off', rejected: 'ban', done: 'graduation-cap', no_show: 'user-x' };
+const pill = (st, extra = '') => `<span class="pill ${st}">${ic(STATUS_IC[st] || 'circle')}${STATUS[st]}${extra}</span>`;
+/** Свой мягкий цвет для каждого ученика — по имени. */
+function avColor(name = '') {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return `hsl(${h} 62% 58%)`;
+}
+const avatar = (name, manual, size = '') => `<div class="avatar ${size === true ? 'lg' : size}" style="--av:${avColor(name)}">${initials(name)}</div>`;
+const empty = (icon, text) => `<div class="empty-state"><div class="ei">${ic(icon)}</div><div>${text}</div></div>`;
 const loadLevel = (d) => (d.off ? -1 : d.load === 0 ? 0 : d.load < 0.34 ? 1 : d.load < 0.67 ? 2 : d.load < 1 ? 3 : 4);
 const initials = (n) => (n || '?').split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 const haptic = (t = 'light') => tg?.HapticFeedback?.impactOccurred(t);
@@ -120,7 +142,7 @@ function openSheet(html, onMount) {
 function closeSheet() { document.activeElement?.blur?.(); document.body.classList.remove('sheet-open'); }
 $('#backdrop').onclick = closeSheet;
 async function run(fn, okMsg) {
-  try { const r = await fn(); if (okMsg) toast(okMsg); haptic('medium'); return r; } catch (e) { toast('⚠️ ' + e.message); throw e; }
+  try { const r = await fn(); if (okMsg) toast(okMsg); haptic('medium'); return r; } catch (e) { toast(e.message); throw e; }
 }
 function confirmBox(text) {
   return new Promise((res) => (tg?.showConfirm ? tg.showConfirm(text, res) : res(confirm(text))));
@@ -186,7 +208,7 @@ async function monthCalendar(container, { onPick, studentMode }) {
       }).join('')}
     </div>
     ${studentMode
-      ? `<div class="legend"><span><i class="dot-ok"></i>есть свободные окна</span><span>🌍 время: ${esc(tzName(S.tz))}</span></div>`
+      ? `<div class="legend"><span><i class="dot-ok"></i>есть свободные окна</span><span>${ic('globe')}${esc(tzName(S.tz))}</span></div>`
       : `<div class="legend"><span>Загрузка:</span><span class="scale">${[0, 1, 2, 3, 4].map((i) => `<i style="background:var(--load-${i})"></i>`).join('')}</span><span>0 → 100%</span><span><i class="hatch"></i>выходной</span></div>`}`;
   container.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => {
     S.month = nextYm(ym, Number(b.dataset.m));
@@ -205,17 +227,17 @@ async function monthCalendar(container, { onPick, studentMode }) {
 // УЧЕНИК
 // =====================================================================
 const studentTabs = [
-  { id: 'book', icon: '📅', label: 'Запись' },
-  { id: 'my', icon: '📋', label: 'Мои уроки' },
-  { id: 'pay', icon: '💳', label: 'Оплата' },
-  { id: 'notif', icon: '⚙️', label: 'Настройки' },
+  { id: 'book', icon: 'calendar-plus', label: 'Запись' },
+  { id: 'my', icon: 'notebook-pen', label: 'Уроки' },
+  { id: 'pay', icon: 'wallet', label: 'Оплата' },
+  { id: 'notif', icon: 'settings-2', label: 'Настройки' },
 ];
 
 async function studentBook() {
   view.innerHTML = `
     <section class="card" id="cal"></section>
-    <section class="card" id="slots"><div class="empty-state"><div>👆</div>Выберите день в календаре</div></section>
-    <section class="card small muted">ℹ️ ${esc(S.me.settings.rules)}</section>`;
+    <section class="card" id="slots">${empty('mouse-pointer-click', 'Выберите день в календаре')}</section>
+    <section class="card note">${ic('info')}<div>${esc(S.me.settings.rules)}</div></section>`;
   await monthCalendar($('#cal'), { studentMode: true, onPick: renderSlots });
   if (S.selDate) { const days = await loadMonth(S.selDate.slice(0, 7)); renderSlots(S.selDate, days[S.selDate]); }
 }
@@ -225,11 +247,11 @@ function renderSlots(date, day) {
   const slots = day?.slots || [];
   let chosen = null;
   box.innerHTML = `
-    <div class="card-head"><h2>${fmt(date)}</h2><span class="muted small">${S.me.settings.lesson_duration} мин · ${money(S.me.price)}</span></div>
+    <div class="card-head">${H('clock', fmt(date))}<span class="pill">${S.me.settings.lesson_duration} мин · ${money(S.me.price)}</span></div>
     ${slots.some((s) => s.free) ? `<div class="slots">${slots.map((s) => `<button class="slot" data-t="${s.start}" data-td="${s.tDate}" data-ts="${s.tStart}" ${s.free ? '' : 'disabled'}>${s.start}</button>`).join('')}</div>
-      <div class="muted small" style="margin-top:8px">🌍 Время указано по вашему часовому поясу: ${esc(tzName(S.tz))}</div>
+      <div class="tz-note">${ic('globe')}Время по вашему часовому поясу: ${esc(tzName(S.tz))}</div>
       <button class="btn primary block" id="bookBtn" style="margin-top:14px" disabled>Выберите время</button>`
-      : '<div class="empty-state"><div>🌙</div>Свободных окон нет</div>'}`;
+      : empty('moon-star', 'Свободных окон нет')}`;
   box.querySelectorAll('.slot').forEach((b) => b.onclick = () => {
     box.querySelectorAll('.slot.on').forEach((x) => x.classList.remove('on'));
     b.classList.add('on');
@@ -244,7 +266,7 @@ function renderSlots(date, day) {
     btn.disabled = true;
     try {
       const b = await run(() => api('/api/book', { date: chosen.date, start: chosen.start }));
-      toast(b.status === 'confirmed' ? '✅ Вы записаны!' : '⏳ Заявка отправлена преподавателю');
+      toast(b.status === 'confirmed' ? 'Вы записаны!' : 'Заявка отправлена преподавателю');
       tg?.HapticFeedback?.notificationOccurred('success');
       S.monthCache.delete(date.slice(0, 7));
       studentBook();
@@ -259,17 +281,17 @@ async function studentMy() {
   const when = (b) => { const v = localOf(b.at); return `${fmt(v.date)}, ${v.time}`; };
   view.innerHTML = `
     <section class="card">
-      <div class="card-head"><h2>Ближайшие уроки</h2></div>
+      <div class="card-head">${H('calendar-clock', 'Ближайшие уроки')}</div>
       <div class="list">${d.upcoming.length ? d.upcoming.map((b) => `
-        <div class="item static"><div><div class="t">${when(b)}</div><div class="s"><span class="pill ${b.status}">${STATUS[b.status]}</span></div></div>
-        <button class="btn bad sm" data-cancel="${b.id}">Отменить</button></div>`).join('')
-        : '<div class="empty-state"><div>📭</div>Пока ничего не запланировано</div>'}</div>
+        <div class="item static"><div><div class="t">${when(b)}</div><div class="s">${pill(b.status)}</div></div>
+        <button class="btn bad sm" data-cancel="${b.id}">${ic('x')}Отменить</button></div>`).join('')
+        : empty('calendar-x', 'Пока ничего не запланировано')}</div>
     </section>
     <section class="card">
-      <div class="card-head"><h2>История и домашка</h2></div>
+      <div class="card-head">${H('book-open', 'История и домашка')}</div>
       <div class="list">${past.length ? past.map((b) => `
         <div class="item static"><div><div class="t">${when(b)}${b.topic ? ` · ${esc(b.topic)}` : ''}</div>
-        ${b.homework ? `<div class="s">📚 ${esc(b.homework)}</div>` : ''}</div><span class="pill ${b.status}">${STATUS[b.status]}</span></div>`).join('')
+        ${b.homework ? `<div class="s">${ic('notebook-pen')} ${esc(b.homework)}</div>` : ''}</div>${pill(b.status)}</div>`).join('')
         : '<div class="empty-state small">Здесь появятся прошедшие уроки</div>'}</div>
     </section>`;
   view.querySelectorAll('[data-cancel]').forEach((b) => b.onclick = async () => {
@@ -286,21 +308,22 @@ async function studentPay() {
   updateBadge(d.balance);
   const st = S.me.settings;
   view.innerHTML = `
-    <div class="kpis two-col">
-      <div class="kpi"><span>Оплачено уроков</span><b class="${d.balance < 1 ? 'neg' : ''}">${d.balance}</b></div>
-      <div class="kpi"><span>Цена урока</span><b>${money(d.price)}</b></div>
-    </div>
-    ${d.balance < 1 ? '<section class="card warn-card"><b>💳 Пора пополнить баланс.</b> Чтобы провести следующее занятие, оплатите урок или пакет уроков.</section>' : ''}
+    <section class="card hero">
+      <div class="muted small" style="font-weight:700">Оплачено уроков</div>
+      <div class="big" style="margin:6px 0 4px">${d.balance} <span style="font-size:18px">${lessonsWord(d.balance)}</span></div>
+      <div class="muted small">Цена урока — ${money(d.price)}</div>
+    </section>
+    ${d.balance < 1 ? `<section class="card warn-card">${ic('triangle-alert')}<div><b>Пора пополнить баланс.</b> Чтобы провести следующее занятие, оплатите урок или пакет уроков.</div></section>` : ''}
     <section class="card">
-      <div class="card-head"><h2>Реквизиты для оплаты</h2></div>
+      <div class="card-head">${H('landmark', 'Реквизиты для оплаты')}</div>
       <div class="pre">${esc(st.payment_details)}</div>
-      <button class="btn primary block" id="sendRcpt" style="margin-top:14px">📎 Отправить чек</button>
+      <button class="btn primary block" id="sendRcpt" style="margin-top:14px">${ic('paperclip')}Отправить чек</button>
       <div class="muted small" style="margin-top:8px">Откроется чат с ботом — пришлите туда скриншот перевода. Преподаватель подтвердит оплату, и баланс обновится.</div>
     </section>
     <section class="card">
-      <div class="card-head"><h2>История оплат</h2></div>
+      <div class="card-head">${H('receipt', 'История оплат')}</div>
       <div class="list">${d.payments.length ? d.payments.map((p) => `<div class="item static"><div><div class="t">${money(p.amount)}</div><div class="s">${p.created_at.slice(0, 10)}${p.note ? ' · ' + esc(p.note) : ''}</div></div><span class="pill done">+${p.lessons} ${lessonsWord(p.lessons)}</span></div>`).join('')
-        : '<div class="empty-state small">Оплат пока не было</div>'}
+        : empty('wallet', 'Оплат пока не было')}
       ${d.receipts.filter((r) => r.status === 'pending').map((r) => `<div class="item static"><div><div class="t">Чек отправлен</div><div class="s">${r.created_at.slice(0, 16)}</div></div><span class="pill pending">на проверке</span></div>`).join('')}</div>
     </section>`;
   $('#sendRcpt').onclick = async () => {
@@ -316,7 +339,7 @@ async function studentNotif() {
   const known = S.me.timezones.some(([z]) => z === S.tz);
   view.innerHTML = `
     <section class="card">
-      <div class="card-head"><h2>🌍 Часовой пояс</h2></div>
+      <div class="card-head">${H('globe', 'Часовой пояс')}</div>
       <p class="muted small" style="margin-top:0">Время уроков в календаре и в сообщениях бота показывается по вашему поясу. Преподаватель видит своё время — всё пересчитывается автоматически.</p>
       <label class="item toggle" style="margin-bottom:10px"><div><div class="t">Определять автоматически</div><div class="s">по времени на вашем телефоне — если переедете, пояс обновится сам</div></div>
         <input type="checkbox" id="tzAutoCb" ${S.me.user.tz_auto ? 'checked' : ''}><span class="sw"></span></label>
@@ -324,7 +347,7 @@ async function studentNotif() {
 
     </section>
     <section class="card">
-      <div class="card-head"><h2>Уведомления</h2></div>
+      <div class="card-head">${H('bell', 'Уведомления')}</div>
       <p class="muted small" style="margin-top:0">Выключите те напоминания, которые вам не нужны. Остальные продолжат приходить.</p>
       <div class="list">${d.notify_types.map(([k, title, desc]) => `
         <label class="item toggle"><div><div class="t">${title}</div><div class="s">${desc}</div></div>
@@ -339,17 +362,17 @@ async function studentNotif() {
   view.querySelectorAll('[data-k]').forEach((cb) => cb.onchange = () =>
     run(() => api('/api/notify', { key: cb.dataset.k, value: cb.checked }), cb.checked ? 'Включено' : 'Выключено').catch(() => { cb.checked = !cb.checked; }));
 }
-function updateBadge(balance) { $('#badge').textContent = `💳 ${balance} ${lessonsWord(balance)}`; }
+function updateBadge(balance) { $('#badge').innerHTML = `${ic('wallet')}${balance} ${lessonsWord(balance)}`; }
 
 // =====================================================================
 // ПРЕПОДАВАТЕЛЬ
 // =====================================================================
 const adminTabs = [
-  { id: 'dash', icon: '🏠', label: 'Обзор' },
-  { id: 'cal', icon: '🗓', label: 'Расписание' },
-  { id: 'students', icon: '👥', label: 'Ученики' },
-  { id: 'log', icon: '🧾', label: 'Журнал' },
-  { id: 'settings', icon: '⚙️', label: 'Настройки' },
+  { id: 'dash', icon: 'layout-dashboard', label: 'Обзор' },
+  { id: 'cal', icon: 'calendar-days', label: 'График' },
+  { id: 'students', icon: 'users', label: 'Ученики' },
+  { id: 'log', icon: 'scroll-text', label: 'Журнал' },
+  { id: 'settings', icon: 'settings-2', label: 'Настройки' },
 ];
 
 function presetRange(key) {
@@ -382,65 +405,74 @@ async function adminDash() {
   const todays = todayDay.bookings.filter((b) => !['cancelled', 'rejected'].includes(b.status));
   setPendingDot(pending.length + receipts.length);
   const presets = [['week', 'Неделя'], ['month', 'Месяц'], ['prev', 'Прошлый месяц'], ['d30', '30 дней'], ['year', 'Год'], ['custom', 'Свои даты']];
+  const nowT = S.me.today.time;
+  const nextLesson = todays.filter((b) => ['confirmed', 'pending'].includes(b.status) && b.end > nowT)[0];
+  const doneToday = todays.filter((b) => b.status === 'done').length;
   view.innerHTML = `
+    <section class="card hero" data-go="${today}" style="cursor:pointer">
+      <div class="muted small" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em">${fmt(today)}</div>
+      <div class="big" style="margin:8px 0 6px">${todays.length ? `${todays.length} ${lessonsWord(todays.length)} сегодня` : 'Сегодня свободно'}</div>
+      <div class="muted small">${nextLesson ? `Ближайший — ${nextLesson.start}, ${esc(nextLesson.name)}` : todays.length ? `Проведено: ${doneToday} из ${todays.length}` : 'Можно отдохнуть или открыть окна в графике'}</div>
+      ${pending.length + receipts.length ? `<div class="row" style="margin-top:14px">${pending.length ? `<span class="btn sm">${ic('inbox')}Заявки: ${pending.length}</span>` : ''}${receipts.length ? `<span class="btn sm">${ic('receipt')}Чеки: ${receipts.length}</span>` : ''}</div>` : ''}
+    </section>
     <section class="card filter">
       <div class="chips">${presets.map(([k, l]) => `<button class="chip ${S.statRange.key === k ? 'on' : ''}" data-p="${k}">${l}</button>`).join('')}</div>
       <div class="two range ${S.statRange.key === 'custom' ? '' : 'hidden'}">
         <div class="field"><label>С</label><input type="date" id="rf" value="${from}"></div>
         <div class="field"><label>По</label><input type="date" id="rt" value="${to}"></div>
       </div>
-      <div class="muted small">Период: <b>${fmt(from, { day: 'numeric', month: 'short', year: 'numeric' })} — ${fmt(to, { day: 'numeric', month: 'short', year: 'numeric' })}</b></div>
+      <div class="period">${ic('calendar-range')}<span>Период: <b>${fmt(from, { day: 'numeric', month: 'short', year: 'numeric' })} — ${fmt(to, { day: 'numeric', month: 'short', year: 'numeric' })}</b></span></div>
     </section>
     <div class="kpis">
-      <div class="kpi"><span>Проведено</span><b>${st.done}</b></div>
-      <div class="kpi"><span>Заработано</span><b>${money(st.earned)}</b></div>
-      <div class="kpi"><span>Оплачено</span><b>${money(st.income)}</b></div>
-      <div class="kpi"><span>Впереди</span><b>${st.upcoming}</b></div>
+      <div class="kpi"><div class="ki">${ic('graduation-cap')}</div><span>Проведено</span><b>${st.done}</b></div>
+      <div class="kpi"><div class="ki">${ic('trending-up')}</div><span>Заработано</span><b>${money(st.earned)}</b></div>
+      <div class="kpi"><div class="ki">${ic('wallet')}</div><span>Оплачено</span><b>${money(st.income)}</b></div>
+      <div class="kpi"><div class="ki">${ic('calendar-clock')}</div><span>Впереди</span><b>${st.upcoming}</b></div>
     </div>
-    ${receipts.length ? `<section class="card"><div class="card-head"><h2>🧾 Чеки на проверке</h2><span class="pill pending">${receipts.length}</span></div>
-      <div class="list">${receipts.map((r) => `<button class="item" data-rc="${r.id}"><div><div class="t">${esc(r.name)}</div><div class="s">${r.created_at.slice(0, 16)}${r.caption ? ' · ' + esc(r.caption) : ''}</div></div><span class="pill">Открыть</span></button>`).join('')}</div></section>` : ''}
-    ${pending.length ? `<section class="card"><div class="card-head"><h2>⏳ Заявки</h2><span class="pill pending">${pending.length}</span></div>
+    ${receipts.length ? `<section class="card"><div class="card-head">${H('receipt', 'Чеки на проверке')}<span class="pill pending">${receipts.length}</span></div>
+      <div class="list">${receipts.map((r) => `<button class="item" data-rc="${r.id}"><div><div class="t">${esc(r.name)}</div><div class="s">${r.created_at.slice(0, 16)}${r.caption ? ' · ' + esc(r.caption) : ''}</div></div><span class="pill confirmed">${ic('eye')}Открыть</span></button>`).join('')}</div></section>` : ''}
+    ${pending.length ? `<section class="card"><div class="card-head">${H('inbox', 'Заявки')}<span class="pill pending">${pending.length}</span></div>
       <div class="list">${pending.slice(0, 4).map(pendingRow).join('')}
       ${pending.length > 4 ? `<button class="btn ghost sm" id="allPending">Показать все (${pending.length})</button>` : ''}</div></section>` : ''}
     <div class="grid-2">
       <section class="card">
-        <div class="card-head"><h2>Уроки по дням</h2><span class="muted small">загрузка ${Math.round(st.load * 100)}%</span></div>
+        <div class="card-head">${H('chart-column', 'Уроки по дням')}<span class="muted small">загрузка ${Math.round(st.load * 100)}%</span></div>
         <div class="daily">${st.daily.length <= 62 ? st.daily.map((d) => `<div class="dcol ${d.off ? 'off' : ''}" title="${d.date}: ${d.lessons}"><i style="height:${(d.lessons / maxDay) * 100}%"></i></div>`).join('') : '<span class="muted small">Слишком длинный период для графика по дням</span>'}</div>
         <div class="daily-axis muted small"><span>${fmt(from, { day: 'numeric', month: 'short' })}</span><span>${fmt(to, { day: 'numeric', month: 'short' })}</span></div>
       </section>
       <section class="card">
-        <div class="card-head"><h2>Отмены и пропуски</h2></div>
+        <div class="card-head">${H('calendar-x', 'Отмены и пропуски')}</div>
         <div class="stat-rows">
-          <div><span>Отменил ученик</span><b>${st.cancelled_student}</b></div>
-          <div><span>Отменил преподаватель</span><b>${st.cancelled_teacher}</b></div>
-          <div><span>Отклонённые заявки</span><b>${st.rejected}</b></div>
-          <div><span>Неявки</span><b>${st.no_show}</b></div>
-          <div><span>Ученики без оплаченных уроков</span><b class="${st.debtors ? 'neg' : ''}">${st.debtors}</b></div>
+          <div><span>${ic('user')}Отменил ученик</span><b>${st.cancelled_student}</b></div>
+          <div><span>${ic('school')}Отменил преподаватель</span><b>${st.cancelled_teacher}</b></div>
+          <div><span>${ic('ban')}Отклонённые заявки</span><b>${st.rejected}</b></div>
+          <div><span>${ic('user-x')}Неявки</span><b>${st.no_show}</b></div>
+          <div><span>${ic('wallet')}Без оплаченных уроков</span><b class="${st.debtors ? 'neg' : ''}">${st.debtors}</b></div>
         </div>
       </section>
     </div>
     <div class="grid-2">
       <section class="card">
-        <div class="card-head"><h2>Популярные дни</h2></div>
+        <div class="card-head">${H('flame', 'Популярные дни')}</div>
         <div class="hbars">${st.byWeekday.map((c, i) => `<div class="hbar"><span>${WD[i]}</span><div class="track"><i style="width:${(c / maxWd) * 100}%"></i></div><span>${c}</span></div>`).join('')}</div>
       </section>
       <section class="card">
-        <div class="card-head"><h2>Самые активные</h2></div>
+        <div class="card-head">${H('trophy', 'Самые активные')}</div>
         <div class="stat-rows">${st.top.length ? st.top.map((t) => `<div><span>${esc(t.name)}</span><b>${t.c}</b></div>`).join('') : '<span class="muted small">Нет проведённых уроков за период</span>'}</div>
       </section>
     </div>
     <div class="grid-2">
       <section class="card">
-        <div class="card-head"><h2>Ближайшие 7 дней</h2><span class="muted small">${Math.round(wkLoad * 100)}%</span></div>
+        <div class="card-head">${H('calendar-days', 'Ближайшие 7 дней')}<span class="muted small">${Math.round(wkLoad * 100)}%</span></div>
         <div class="week">${week.map((d) => `<div class="bar" data-go="${d.date}">
           <b>${d.off ? '—' : d.lessons}</b>
           <div class="col ${d.off ? 'hatch-bg' : ''}"><div class="fill" style="height:${Math.round(d.load * 100)}%"></div></div>
           <small>${WD[(parse(d.date).getUTCDay() + 6) % 7]} ${Number(d.date.slice(8))}</small></div>`).join('')}</div>
       </section>
       <section class="card">
-        <div class="card-head"><h2>Сегодня</h2><span class="muted small">${fmt(today)}</span></div>
-        <div class="list">${todays.length ? todays.map((b) => `<button class="item" data-go="${today}"><div><div class="t">${b.start} · ${esc(b.name)}</div><div class="s">${esc(b.level || '')}</div></div><span class="pill ${b.status}">${STATUS[b.status]}</span></button>`).join('')
-          : '<div class="empty-state"><div>☕️</div>Сегодня уроков нет</div>'}</div>
+        <div class="card-head">${H('sun', 'Сегодня')}<span class="muted small">${fmt(today)}</span></div>
+        <div class="list">${todays.length ? todays.map((b) => `<button class="item" data-go="${today}"><div><div class="t">${b.start} · ${esc(b.name)}</div><div class="s">${esc(b.level || '')}</div></div>${pill(b.status)}</button>`).join('')
+          : empty('coffee', 'Сегодня уроков нет')}</div>
       </section>
     </div>`;
 
@@ -465,7 +497,7 @@ async function adminDash() {
   view.querySelectorAll('[data-go]').forEach((b) => b.onclick = () => { S.selDate = b.dataset.go; S.month = b.dataset.go.slice(0, 7); go('cal'); });
 }
 const pendingRow = (b) => `<div class="item static"><div><div class="t">${esc(b.name)}</div><div class="s">${fmt(b.date)}, ${b.start}</div></div>
-  <div class="row nowrap"><button class="btn ok sm" data-st="confirmed" data-id="${b.id}">✓</button><button class="btn bad sm" data-st="rejected" data-id="${b.id}">✕</button></div></div>`;
+  <div class="row nowrap"><button class="btn ok sm icon" data-st="confirmed" data-id="${b.id}" aria-label="Подтвердить">${ic('check')}</button><button class="btn bad sm icon" data-st="rejected" data-id="${b.id}" aria-label="Отклонить">${ic('x')}</button></div></div>`;
 function bindPending(root, after) {
   root.querySelectorAll('[data-st]').forEach((b) => b.onclick = () =>
     run(() => api('/api/admin/status', { id: b.dataset.id, status: b.dataset.st }), b.dataset.st === 'confirmed' ? 'Подтверждено' : 'Заявка отклонена').then(() => { S.monthCache.clear(); after(); }));
@@ -483,7 +515,7 @@ async function receiptSheet(r) {
         <div class="field"><label>Уроков зачислить</label><input id="rl" type="number" inputmode="numeric" min="1" value="4"></div>
         <div class="field"><label>Сумма, ${S.cur}</label><input id="ra" type="number" inputmode="numeric" value="${4 * price}"></div>
       </div>
-      <div class="two"><button class="btn ok" id="rOk">✅ Зачислить</button><button class="btn bad" id="rNo">Отклонить</button></div>
+      <div class="two"><button class="btn ok" id="rOk">${ic('check')}Зачислить</button><button class="btn bad" id="rNo">${ic('x')}Отклонить</button></div>
     </div>`, async () => {
     $('#rl').oninput = () => { $('#ra').value = (Number($('#rl').value) || 0) * price; };
     $('#rOk').onclick = () => run(() => api('/api/admin/receipt', { id: r.id, action: 'accept', lessons: Number($('#rl').value), amount: $('#ra').value }), 'Оплата зачислена').then(() => { closeSheet(); adminDash(); });
@@ -524,13 +556,13 @@ async function renderAdminDay(date) {
   const isPast = (s) => date < S.me.today.date || (date === S.me.today.date && s.start <= S.me.today.time);
   box.innerHTML = `
     <div class="card-head"><div><h2>${fmt(date)}</h2><div class="muted small">${d.window ? `${d.window.start}–${d.window.end}` : 'Выходной'}${d.override ? ' · изменён вручную' : ''}</div></div>
-      <button class="btn ghost sm" id="dayCfg">Настроить день</button></div>
+      <button class="btn ghost sm" id="dayCfg">${ic('sliders-horizontal')}Настроить</button></div>
     <div class="timeline">${rows.length ? rows.map((r) => `<div class="tl-row"><div class="tl-time">${r.t}</div>${
-      r.kind === 'lesson' ? `<button class="tl-item st-${r.b.status}" data-b="${r.b.id}"><div><div style="font-weight:700">${esc(r.b.name)}${r.b.tg_id ? '' : ' 📒'}</div><div class="small muted">${r.b.start}–${r.b.end}${r.b.topic ? ' · ' + esc(r.b.topic) : ''}</div></div><span class="pill ${r.b.status}">${STATUS[r.b.status]}</span></button>`
-      : r.kind === 'block' ? `<button class="tl-item block" data-bl="${r.bl.id}"><span>⛔ ${r.bl.start}–${r.bl.end} ${esc(r.bl.reason)}</span><span class="small">снять</span></button>`
+      r.kind === 'lesson' ? `<button class="tl-item st-${r.b.status}" data-b="${r.b.id}"><div class="row nowrap" style="gap:10px;min-width:0">${avatar(r.b.name, !r.b.tg_id, 'sm')}<div style="min-width:0"><div class="who">${esc(r.b.name)}${r.b.tg_id ? '' : ' <span class="tag">без TG</span>'}</div><div class="small muted">${r.b.start}–${r.b.end}${r.b.topic ? ' · ' + esc(r.b.topic) : ''}</div></div></div>${pill(r.b.status)}</button>`
+      : r.kind === 'block' ? `<button class="tl-item block" data-bl="${r.bl.id}"><span>${ic('lock')} ${r.bl.start}–${r.bl.end} ${esc(r.bl.reason)}</span><span class="small">снять</span></button>`
       : isPast(r.s) ? '<div class="tl-item free dim"><span>прошло</span></div>'
-      : `<button class="tl-item free" data-free="${r.s.start}" data-end="${r.s.end}"><span>${r.s.past ? 'свободно (ученик уже не может записаться)' : 'свободно'}</span><span class="small">＋</span></button>`
-    }</div>`).join('') : '<div class="empty-state"><div>🌙</div>Нерабочий день</div>'}</div>
+      : `<button class="tl-item free" data-free="${r.s.start}" data-end="${r.s.end}"><span>${r.s.past ? 'свободно (ученик уже не может записаться)' : 'свободно'}</span>${ic('plus')}</button>`
+    }</div>`).join('') : empty('moon-star', 'Нерабочий день')}</div>
     ${history.length ? `<div class="muted small" style="margin-top:12px">Отменённые/отклонённые: ${history.map((b) => `${b.start} ${esc(b.name)}`).join(', ')}</div>` : ''}`;
   box.querySelector('#dayCfg').onclick = () => dayConfigSheet(date, d);
   box.querySelectorAll('[data-b]').forEach((el) => el.onclick = () => lessonSheet(d.bookings.find((b) => b.id == el.dataset.b), date));
@@ -548,18 +580,18 @@ function lessonSheet(b, date) {
   const act = (status, label, cls = '') => `<button class="btn ${cls}" data-s="${status}">${label}</button>`;
   openSheet(`
     <h2>${esc(b.name)}</h2>
-    <div class="muted">${fmt(b.date)}, ${b.start}–${b.end} · <span class="pill ${b.status}">${STATUS[b.status]}</span></div>
+    <div class="muted">${fmt(b.date)}, ${b.start}–${b.end} · ${pill(b.status)}</div>
     <div class="actions">
-      ${b.status === 'pending' ? act('confirmed', '✓ Подтвердить', 'ok') + act('rejected', '✕ Отклонить', 'bad') : ''}
-      ${['pending', 'confirmed'].includes(b.status) ? act('done', '🎓 Проведён', 'ok') + act('no_show', '🙈 Неявка', 'bad') + act('cancelled', 'Отменить урок', 'bad') + '<button class="btn" id="resch">🔁 Перенести</button>' : ''}
-      ${['done', 'no_show', 'late_cancel'].includes(b.status) ? act('confirmed', '↩︎ Вернуть в план') : ''}
+      ${b.status === 'pending' ? act('confirmed', ic('check') + 'Подтвердить', 'ok') + act('rejected', ic('x') + 'Отклонить', 'bad') : ''}
+      ${['pending', 'confirmed'].includes(b.status) ? act('done', ic('graduation-cap') + 'Проведён', 'ok') + act('no_show', ic('user-x') + 'Неявка', 'bad') + act('cancelled', ic('calendar-x') + 'Отменить', 'bad') + `<button class="btn" id="resch">${ic('repeat')}Перенести</button>` : ''}
+      ${['done', 'no_show', 'late_cancel'].includes(b.status) ? act('confirmed', ic('undo-2') + 'Вернуть в план') : ''}
     </div>
     <div class="muted small" style="margin-top:6px">«Проведён» — ученику придёт уведомление с остатком баланса, а при нулевом балансе — напоминание об оплате.</div>
     <div class="form">
       <div class="field"><label>Тема урока</label><input id="topic" value="${esc(b.topic)}" placeholder="Present Perfect, small talk…"></div>
       <div class="field"><label>Домашнее задание</label><textarea id="hw" placeholder="Workbook p.24 ex.1–3">${esc(b.homework)}</textarea></div>
       <div class="two"><button class="btn" id="saveN">Сохранить</button><button class="btn primary" id="sendN" ${b.tg_id ? '' : 'disabled'}>Сохранить и отправить</button></div>
-      <button class="btn ghost" id="openStu">👤 Карточка ученика</button>
+      <button class="btn ghost" id="openStu">${ic('user')}Карточка ученика</button>
     </div>`, (sh) => {
     sh.querySelectorAll('[data-s]').forEach((x) => x.onclick = async () => {
       if (x.dataset.s === 'cancelled' && !(await confirmBox('Отменить урок? Ученик получит уведомление.'))) return;
@@ -586,9 +618,9 @@ async function freeSlotSheet(date, start, end) {
     <div class="form">
       <div class="field"><label>Записать ученика</label>
         <select id="stu">${students.map((s) => `<option value="${s.id}">${esc(s.name)}${s.tg_id ? '' : ' (без Telegram)'}</option>`).join('')}</select></div>
-      <button class="btn primary" id="add" ${students.length ? '' : 'disabled'}>Записать</button>
+      <button class="btn primary" id="add" ${students.length ? '' : 'disabled'}>${ic('calendar-plus')}Записать</button>
       <div class="field"><label>Или закрыть время</label><input id="reason" placeholder="Причина (видно только вам)"></div>
-      <button class="btn ghost" id="blk">⛔ Заблокировать ${start}–${end}</button>
+      <button class="btn ghost" id="blk">${ic('lock')}Закрыть ${start}–${end}</button>
     </div>`, () => {
     $('#add').onclick = () => run(() => api('/api/admin/book', { user_id: $('#stu').value, date, start }), 'Ученик записан').then(() => refreshCal(date));
     $('#blk').onclick = () => run(() => api('/api/admin/block', { date, start, end, reason: $('#reason').value }), 'Время закрыто').then(() => refreshCal(date));
@@ -634,8 +666,8 @@ async function adminStudents() {
   const list = await api('/api/admin/students');
   view.innerHTML = `
     <section class="card">
-      <div class="card-head"><h2>Ученики · ${list.length}</h2><button class="btn primary sm" id="addStu">＋ Добавить</button></div>
-      <input class="search" id="q" placeholder="Поиск по имени или @username">
+      <div class="card-head">${H('users', `Ученики · ${list.length}`)}<button class="btn primary sm" id="addStu">${ic('user-plus')}Добавить</button></div>
+      <div class="search-wrap">${ic('search')}<input class="search" id="q" placeholder="Поиск по имени или @username"></div>
       <div class="chips" style="margin-top:10px"><button class="chip on" data-f="all">Все</button><button class="chip" data-f="debt">Нужна оплата</button><button class="chip" data-f="manual">Без Telegram</button></div>
       <div class="list" id="sl" style="margin-top:10px"></div>
     </section>`;
@@ -646,11 +678,11 @@ async function adminStudents() {
       .filter((s) => filter === 'all' || (filter === 'debt' ? s.balance < 1 : !s.tg_id));
     $('#sl').innerHTML = f.length ? f.map((s) => `
       <button class="item" data-u="${s.id}">
-        <div class="row nowrap" style="min-width:0"><div class="avatar ${s.tg_id ? '' : 'manual'}">${initials(s.name)}</div>
-          <div style="min-width:0"><div class="t">${esc(s.name)} ${s.blocked ? '🚫' : ''}${s.tg_id ? '' : ' <span class="tag">без Telegram</span>'}</div>
+        <div class="row nowrap" style="min-width:0">${avatar(s.name, !s.tg_id)}
+          <div style="min-width:0"><div class="t">${esc(s.name)} ${s.blocked ? '🚫' : ''}${s.tg_id ? '' : ` <span class="tag">${ic('notebook')}без Telegram</span>`}</div>
           <div class="s">${money(s.price ?? S.me.settings.price)} · уроков: ${s.lessons_done}${s.next_lesson ? ` · след.: ${fmt(s.next_lesson.slice(0, 10), { day: 'numeric', month: 'short' })} ${s.next_lesson.slice(11)}` : ''}</div></div></div>
         <span class="pill ${s.balance < 1 ? 'neg' : ''}">${s.balance} ур.</span>
-      </button>`).join('') : '<div class="empty-state"><div>👋</div>Никого не найдено</div>';
+      </button>`).join('') : empty('search-x', 'Никого не найдено');
     view.querySelectorAll('[data-u]').forEach((b) => b.onclick = () => studentSheet(b.dataset.u));
   };
   $('#q').oninput = draw;
@@ -703,23 +735,23 @@ async function studentSheet(id) {
   const rj = cnt((b) => b.status === 'rejected');
   const price = u.price ?? Number(S.me.settings.price);
   openSheet(`
-    <div class="row nowrap"><div class="avatar ${u.tg_id ? '' : 'manual'}">${initials(u.name)}</div>
-      <div><h2>${esc(u.name)}</h2><div class="muted small">${u.tg_id ? (u.username ? '@' + esc(u.username) : 'Telegram подключён') + ' · 🌍 ' + esc(tzName(u.tz || 'Europe/Moscow')) : '📒 без Telegram — только учёт'}</div></div></div>
+    <div class="row nowrap">${avatar(u.name, !u.tg_id, true)}
+      <div><h2>${esc(u.name)}</h2><div class="muted small">${u.tg_id ? (u.username ? '@' + esc(u.username) : 'Telegram подключён') + ' · ' + esc(tzName(u.tz || 'Europe/Moscow')) : 'без Telegram — только учёт'}</div></div></div>
     <div class="kpis" style="margin-top:12px">
-      <div class="kpi"><span>Баланс, уроков</span><b class="${u.balance < 1 ? 'neg' : ''}">${u.balance}</b></div>
-      <div class="kpi"><span>Проведено</span><b>${cnt((b) => b.status === 'done')}</b></div>
-      <div class="kpi"><span>Цена урока</span><b>${money(price)}</b></div>
-      <div class="kpi"><span>Оплачено всего</span><b>${money(d.payments.reduce((a, p) => a + p.amount, 0))}</b></div>
+      <div class="kpi"><div class="ki">${ic('wallet')}</div><span>Баланс, уроков</span><b class="${u.balance < 1 ? 'neg' : ''}">${u.balance}</b></div>
+      <div class="kpi"><div class="ki">${ic('graduation-cap')}</div><span>Проведено</span><b>${cnt((b) => b.status === 'done')}</b></div>
+      <div class="kpi"><div class="ki">${ic('tag')}</div><span>Цена урока</span><b>${money(price)}</b></div>
+      <div class="kpi"><div class="ki">${ic('banknote')}</div><span>Оплачено всего</span><b>${money(d.payments.reduce((a, p) => a + p.amount, 0))}</b></div>
     </div>
     <div class="stat-rows" style="margin-top:10px">
-      <div><span>Отменил ученик</span><b>${cs}</b></div>
-      <div><span>Отменил преподаватель</span><b>${ct}</b></div>
-      <div><span>Отклонённые заявки</span><b>${rj}</b></div>
-      <div><span>Неявки</span><b>${cnt((b) => b.status === 'no_show')}</b></div>
+      <div><span>${ic('user')}Отменил ученик</span><b>${cs}</b></div>
+      <div><span>${ic('school')}Отменил преподаватель</span><b>${ct}</b></div>
+      <div><span>${ic('ban')}Отклонённые заявки</span><b>${rj}</b></div>
+      <div><span>${ic('user-x')}Неявки</span><b>${cnt((b) => b.status === 'no_show')}</b></div>
     </div>
     <div class="form">
       <div class="two">
-        <div class="field"><label>Индивидуальная цена, ${S.cur}</label><input id="up" type="number" inputmode="numeric" value="${u.price ?? ''}" placeholder="${S.me.settings.price} (по умолчанию)"></div>
+        <div class="field"><label>Своя цена, ${S.cur}</label><input id="up" type="number" inputmode="numeric" value="${u.price ?? ''}" placeholder="${S.me.settings.price} (по умолчанию)"></div>
         <div class="field"><label>Телефон</label><input id="uph" type="tel" value="${esc(u.phone)}"></div>
       </div>
       <div class="two">
@@ -728,18 +760,18 @@ async function studentSheet(id) {
       </div>
       <div class="field"><label>Заметки</label><textarea id="nt">${esc(u.notes)}</textarea></div>
       <div class="two"><button class="btn" id="saveU">Сохранить</button><button class="btn ${u.blocked ? 'ok' : 'bad'}" id="blkU">${u.blocked ? 'Разблокировать' : 'Заблокировать'}</button></div>
-      ${u.tg_id ? '<button class="btn ghost" id="remindU">💳 Напомнить об оплате</button>' : '<button class="btn ghost" id="linkU">🔗 Ссылка-приглашение (по желанию)</button>'}
-      <h3>💳 Внести оплату</h3>
+      ${u.tg_id ? `<button class="btn ghost" id="remindU">${ic('bell-ring')}Напомнить об оплате</button>` : `<button class="btn ghost" id="linkU">${ic('link')}Ссылка-приглашение (по желанию)</button>`}
+      <h3 class="section-title">${ic('banknote')}Внести оплату</h3>
       <div class="two">
         <div class="field"><label>Уроков</label><input id="pl" type="number" inputmode="numeric" placeholder="4"></div>
         <div class="field"><label>Сумма, ${S.cur}</label><input id="pa" type="number" inputmode="numeric" placeholder="${4 * price}"></div>
       </div>
       <input class="search" id="pn" placeholder="Комментарий (пакет, способ оплаты…)">
-      <button class="btn primary" id="payU">Добавить оплату</button>
-      <button class="btn ghost" id="bookU">➕ Записать на урок</button>
+      <button class="btn primary" id="payU">${ic('plus')}Добавить оплату</button>
+      <button class="btn ghost" id="bookU">${ic('calendar-plus')}Записать на урок</button>
     </div>
     <h3 style="margin-top:18px">Уроки</h3>
-    <div class="list" style="margin-top:8px">${d.bookings.slice(0, 20).map((b) => `<div class="item static"><div><div class="t">${fmt(b.date, { day: 'numeric', month: 'short' })}, ${b.start}${b.topic ? ' · ' + esc(b.topic) : ''}</div>${b.homework ? `<div class="s">📚 ${esc(b.homework)}</div>` : ''}</div><span class="pill ${b.status}">${STATUS[b.status]}${b.cancelled_by ? (b.cancelled_by === 'student' ? ' · ученик' : ' · вы') : ''}</span></div>`).join('') || '<span class="muted small">Пока нет</span>'}</div>
+    <div class="list" style="margin-top:8px">${d.bookings.slice(0, 20).map((b) => `<div class="item static"><div><div class="t">${fmt(b.date, { day: 'numeric', month: 'short' })}, ${b.start}${b.topic ? ' · ' + esc(b.topic) : ''}</div>${b.homework ? `<div class="s">${ic('notebook-pen')} ${esc(b.homework)}</div>` : ''}</div>${pill(b.status, b.cancelled_by ? (b.cancelled_by === 'student' ? ' · ученик' : ' · вы') : '')}</div>`).join('') || '<span class="muted small">Пока нет</span>'}</div>
     <h3 style="margin-top:18px">Оплаты</h3>
     <div class="list" style="margin-top:8px">${d.payments.map((p) => `<div class="item static"><div><div class="t">${money(p.amount)}</div><div class="s">${p.created_at.slice(0, 10)}${p.note ? ' · ' + esc(p.note) : ''}</div></div><span class="pill done">+${p.lessons}</span></div>`).join('') || '<span class="muted small">Пока нет</span>'}</div>
     <h3 style="margin-top:18px">Журнал ученика</h3>
@@ -783,7 +815,7 @@ async function adminLog() {
   const groups = [...new Set(logs.map((l) => l.action.split('.')[0]))];
   view.innerHTML = `
     <section class="card">
-      <div class="card-head"><h2>Журнал действий</h2><span class="muted small">${logs.length} записей</span></div>
+      <div class="card-head">${H('scroll-text', 'Журнал действий')}<span class="muted small">${logs.length} записей</span></div>
       <div class="chips" style="margin-bottom:8px"><button class="chip on" data-f="">Все</button>
         ${groups.map((g) => `<button class="chip" data-f="${g}">${names[g] || g}</button>`).join('')}</div>
       <div class="log" id="lg"></div>
@@ -800,7 +832,7 @@ async function adminSettings() {
   const days = s.work_days.split(',');
   view.innerHTML = `
     <section class="card">
-      <div class="card-head"><h2>Расписание и правила</h2></div>
+      <div class="card-head">${H('calendar-cog', 'Расписание и правила')}</div>
       <form class="form" id="sf">
         <div class="field"><label>Имя преподавателя</label><input name="teacher_name" value="${esc(s.teacher_name)}"></div>
         <div class="field"><label>Рабочие дни</label><div class="weekdays">${WD.map((w, i) => `<label><input type="checkbox" name="wd" value="${i + 1}" ${days.includes(String(i + 1)) ? 'checked' : ''}><span>${w}</span></label>`).join('')}</div></div>
@@ -828,11 +860,11 @@ async function adminSettings() {
           <select name="auto_confirm"><option value="0" ${s.auto_confirm === '0' ? 'selected' : ''}>Вручную — я подтверждаю каждую</option><option value="1" ${s.auto_confirm === '1' ? 'selected' : ''}>Автоматически</option></select></div>
         <div class="field"><label>Реквизиты для оплаты</label><textarea name="payment_details" rows="4">${esc(s.payment_details)}</textarea></div>
         <div class="field"><label>Правила для учеников</label><textarea name="rules">${esc(s.rules)}</textarea></div>
-        <button class="btn primary" type="submit">Сохранить настройки</button>
+        <button class="btn primary" type="submit">${ic('save')}Сохранить настройки</button>
       </form>
     </section>
     <section class="card">
-      <div class="card-head"><h2>Экспорт данных (CSV для Excel)</h2></div>
+      <div class="card-head">${H('download', 'Экспорт в Excel (CSV)')}</div>
       <div class="row">${[['bookings', 'Уроки'], ['students', 'Ученики'], ['payments', 'Оплаты'], ['logs', 'Журнал']].map(([k, l]) => `<button class="btn ghost sm" data-exp="${k}">${l}</button>`).join('')}</div>
       <div class="muted small" style="margin-top:8px">Файл придёт вам в чат с ботом.</div>
     </section>`;
@@ -862,7 +894,7 @@ async function go(tab) {
   closeSheet();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   view.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
-  try { await RENDER[tab](); } catch (e) { view.innerHTML = `<div class="card empty-state"><div>⚠️</div>${esc(e.message)}</div>`; }
+  try { await RENDER[tab](); } catch (e) { view.innerHTML = `<div class="card">${empty('triangle-alert', esc(e.message))}</div>`; }
   window.scrollTo({ top: 0 });
 }
 
@@ -870,7 +902,7 @@ async function go(tab) {
   try {
     S.me = await api('/api/me');
   } catch (e) {
-    view.innerHTML = `<div class="card empty-state"><div>🔒</div>${esc(e.message)}</div>`;
+    view.innerHTML = `<div class="card">${empty('lock', esc(e.message))}</div>`;
     $('#hello').textContent = '';
     return;
   }
@@ -884,11 +916,11 @@ async function go(tab) {
       try {
         const r = await api('/api/tz', { tz: deviceTz, auto: true, force: true, notify: true });
         S.tz = r.tz;
-        view.innerHTML = `<section class="card empty-state"><div>🌍</div><h2>Часовой пояс определён</h2><p>${esc(r.label)}</p><p class="muted small">${r.registered ? 'Можно возвращаться в чат — сообщение уже там.' : ''}</p><button class="btn primary block" id="toChat">Вернуться в чат</button></section>`;
+        view.innerHTML = `<section class="card empty-state"><div class="ei">${ic('globe')}</div><h2>Часовой пояс определён</h2><p>${esc(r.label)}</p><p class="muted small">${r.registered ? 'Можно возвращаться в чат — сообщение уже там.' : ''}</p><button class="btn primary block" id="toChat">Вернуться в чат</button></section>`;
         $('#toChat').onclick = () => tg?.close?.();
         setTimeout(() => tg?.close?.(), 2500);
         return;
-      } catch (e) { toast('⚠️ ' + e.message); }
+      } catch (e) { toast(e.message); }
     } else if (S.me.user.tz_auto && deviceTz !== S.me.tz) {
       try { const r = await api('/api/tz', { tz: deviceTz, auto: true }); S.tz = r.tz; S.me.tz = r.tz; S.me.today = null; } catch { /* оставим как есть */ }
     }
@@ -896,11 +928,14 @@ async function go(tab) {
   if (!S.me.today) { const v = localOf(S.me.now); S.me.today = v; }
   S.month = S.me.today.date.slice(0, 7);
   const admin = S.me.admin;
-  $('#hello').textContent = admin ? 'Панель преподавателя' : `Преподаватель — ${S.me.settings.teacher_name}`;
-  $('#title').textContent = admin ? S.me.settings.teacher_name : 'Уроки английского';
-  if (admin) $('#badge').textContent = '🛠 Админ'; else updateBadge(S.me.user.balance);
+  const hour = Number((S.me.today?.time || '12:00').slice(0, 2));
+  const greet = hour < 5 ? 'Доброй ночи' : hour < 12 ? 'Доброе утро' : hour < 18 ? 'Добрый день' : 'Добрый вечер';
+  const first = (S.me.user.name || '').split(' ')[0];
+  $('#hello').textContent = admin ? greet : `${greet}${first ? ', ' + first : ''}`;
+  $('#title').textContent = admin ? S.me.settings.teacher_name : `Уроки с ${S.me.settings.teacher_name === 'Таня' ? 'Таней' : S.me.settings.teacher_name}`;
+  if (admin) $('#badge').innerHTML = `${ic('shield-check')}Панель`; else updateBadge(S.me.user.balance);
   const tabs = admin ? adminTabs : studentTabs;
-  $('#tabs').innerHTML = tabs.map((t) => `<button data-tab="${t.id}"><span>${t.icon}</span>${t.label}</button>`).join('');
+  $('#tabs').innerHTML = tabs.map((t) => `<button data-tab="${t.id}">${ic(t.icon)}<span class="tl">${t.label}</span></button>`).join('');
   $('#tabs').querySelectorAll('button').forEach((b) => b.onclick = () => { haptic(); go(b.dataset.tab); });
   if (admin) api('/api/admin/settings').then((s) => { S.settings = s; }).catch(() => {});
   else loadMonth(S.month).catch(() => {}); // прогрев календаря
